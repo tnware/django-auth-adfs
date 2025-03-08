@@ -4,16 +4,18 @@ Token Lifecycle Middleware
 Traditionally, django-auth-adfs is used **exclusively** as an authentication solution - it handles user authentication
 via ADFS/Azure AD and maps claims to Django users. It doesn't really care about the access tokens from Azure/ADFS after you've been authenticated.
 This is a useful pattern for many applications, but for those of you who build internal applications for
-your organization, you might want to make delegated API calls to Microsoft Graph or other APIs on behalf of the user.
+your organization, you might want to make delegated requests to Microsoft Graph or other resources on behalf of the user.
 
-The Token Lifecycle Middleware extends django-auth-adfs beyond pure authentication to also handle token management
-for API access. This creates a more integrated approach where:
+The Token Lifecycle Middleware extends django-auth-adfs beyond pure authentication to also handle the complete lifecycle of access tokens
+after the authentication process. This creates a more integrated approach where:
 
 * The same application registration handles both authentication and API access
 * Tokens obtained during authentication are managed and refreshed automatically
 * The application can make delegated API calls on behalf of the user
 
-This middleware is particularly useful for applications that need to make API calls to Microsoft services on behalf of the user, or after the user has been authenticated.
+This middleware is particularly useful for applications that need to make delegated requests to Microsoft services on behalf of the user, or otherwise make additional
+requests to the Azure AD/ADFS application after the user has been authenticated.
+
 While not required for basic authentication, it represents an architectural decision and whether you need this functionality depends on your specific requirements
 and your organization's ADFS/Azure AD configuration.
 
@@ -22,8 +24,8 @@ How it works
 
 The ``TokenLifecycleMiddleware`` handles the entire token lifecycle:
 
-1. **Initial Token Capture**: Uses a signal handler to capture tokens during authentication
-2. **Token Storage**: Automatically stores tokens in the session after successful authentication
+1. **Initial Token Capture**: Uses the ``post_authenticate`` signal to capture tokens during authentication
+2. **Token Storage**: Automatically stores tokens in the users session after successful authentication
 3. **Token Refresh**: Checks if the access token is about to expire and refreshes it if needed
 4. **Session Management**: Keeps the session updated with the latest tokens
 5. **OBO Token Management**: Handles On-Behalf-Of tokens for Microsoft Graph API
@@ -75,6 +77,10 @@ When using the Token Lifecycle Middleware, your Azure AD application registratio
 beyond those required for simple authentication. This extends the standard authentication-only setup described in the :doc:`azure_ad_config_guide` with additional
 API permissions needed for delegated access.
 
+.. important::
+    Your Django application's session cookie age must be set to a value that is less than that of your ADFS/Azure AD application's refresh token lifetime.
+
+    If a users refresh token has expired, the user will be required to re-authenticate to continue making delegated requests.
 
 Security Considerations
 ---------------------
