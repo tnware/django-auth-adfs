@@ -497,3 +497,25 @@ PROXIES
 
 An optional proxy for all communication with the server. Example: ``{'http': '10.0.0.1', 'https': '10.0.0.2'}``
 See the `requests documentation <https://requests.readthedocs.io/en/v3.0.0/api/#requests.Session.proxies>`__ for more information.
+
+ADFS_TOKEN_REFRESH_THRESHOLD
+---------------------------
+* **Default**: ``300`` (5 minutes)
+* **Type**: ``integer``
+* **Unit**: seconds
+
+Used by the ``TokenLifecycleMiddleware`` to determine how long before token expiration to attempt a refresh.
+This setting controls how proactively the middleware will refresh tokens before they expire.
+
+ADFS_STORE_OBO_TOKEN
+------------------
+* **Default**: ``True``
+* **Type**: ``boolean``
+
+Used by the ``TokenLifecycleMiddleware`` to enable or disable the storage of On-Behalf-Of (OBO) tokens
+for Microsoft Graph API. Set to ``False`` if you don't need to access Microsoft Graph API.
+
+.. note::
+   When using the ``TokenLifecycleMiddleware`` with Django's ``signed_cookies`` session backend, token storage
+   is always disabled for security reasons. This behavior cannot be overridden. If you need token storage,
+   you must use a different session backend like database or cache-based sessions.
