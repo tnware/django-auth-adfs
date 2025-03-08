@@ -89,6 +89,18 @@ Considerations
 - OBO token storage is enabled by default but can be disabled with the ``ADFS_STORE_OBO_TOKEN`` setting.
 - Using the OBO token versus the regular access token is dependent on the resources you are accessing and the permissions granted to your ADFS/Azure AD application. See `here <#understanding-access-tokens-vs-obo-tokens>`_ for more details.
 
+**Existing Sessions**
+
+When deploying the Token Lifecycle Middleware to an existing application with active user sessions, be aware of the following:
+
+The middleware only captures tokens during the authentication process. Existing authenticated sessions won't have tokens stored in them, which means:
+
+- Users with existing sessions won't have access to token-dependent features until they re-authenticate
+- Utility functions like ``get_access_token()`` and ``get_obo_access_token()`` will return ``None`` for these sessions
+- API calls that depend on these tokens will fail for existing sessions
+
+The best approach is to ensure that all users re-authenticate after the middleware is deployed.
+
 Azure AD Application Configuration
 ----------------------------------
 
