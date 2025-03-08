@@ -1,7 +1,7 @@
 Token Lifecycle Middleware
 ========================
 
-Traditionally, django-auth-adfs is used as an authentication solution - it handles user authentication
+Traditionally, django-auth-adfs is used **exclusively** as an authentication solution - it handles user authentication
 via ADFS/Azure AD and maps claims to Django users. It doesn't really care about the access tokens from Azure/ADFS after you've been authenticated.
 This is a useful pattern for many applications, but for those of you who build internal applications for
 your organization, you might want to make delegated API calls to Microsoft Graph or other APIs on behalf of the user.
@@ -26,10 +26,18 @@ The ``TokenLifecycleMiddleware`` handles the entire token lifecycle:
 2. **Token Storage**: Automatically stores tokens in the session after successful authentication
 3. **Token Refresh**: Checks if the access token is about to expire and refreshes it if needed
 4. **Session Management**: Keeps the session updated with the latest tokens
-5. **User Object Synchronization**: Ensures the user object has the latest tokens
-6. **OBO Token Management**: Handles On-Behalf-Of tokens for Microsoft Graph API
+5. **OBO Token Management**: Handles On-Behalf-Of tokens for Microsoft Graph API
 
 Read more: https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow#protocol-diagram
+
+
+.. warning::
+    The Token Lifecycle Middleware is a new feature in django-auth-adfs and is considered experimental.
+    Please be aware:
+
+    **Currently no community support is guaranteed to be available for this feature**
+
+    We recommend thoroughly testing this feature in your specific environment before deploying to production.
 
 Configuration
 ------------
@@ -67,15 +75,6 @@ When using the Token Lifecycle Middleware, your Azure AD application registratio
 beyond those required for simple authentication. This extends the standard authentication-only setup described in the :doc:`azure_ad_config_guide` with additional
 API permissions needed for delegated access.
 
-How Token Capture Works
-----------------------
-
-The middleware uses Django's signal system to capture tokens during authentication:
-
-1. A signal handler is registered for the ``post_authenticate`` signal
-2. When a user is authenticated, the signal handler captures the tokens from the authentication process
-3. The middleware then copies these tokens to the session, where they are **persistently stored** until the session expires
-4. On subsequent requests, the middleware manages these tokens in the session (refreshing them when needed)
 
 Security Considerations
 ---------------------
@@ -87,6 +86,7 @@ The middleware will not store tokens in the session when using Django's ``signed
 
 .. code-block:: python
 
+    # This will not work with the token lifecycle middleware
     SESSION_ENGINE = 'django.contrib.sessions.backends.signed_cookies'
 
 This is for security reasons:
@@ -95,11 +95,7 @@ This is for security reasons:
 2. **Security Risks**: Storing sensitive tokens in cookies increases the risk of token theft
 3. **Performance**: Large cookies are sent with every request, increasing bandwidth usage
 
-If you're using the ``signed_cookies`` session backend and need token storage, you must switch to database or cache-based sessions:
-
-.. code-block:: python
-
-    SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+If you're using the ``signed_cookies`` session backend and need token storage, you wont be able to use the token lifecycle middleware.
 
 .. note::
     This restriction only applies to the ``signed_cookies`` session backend. For other session backends (database, cache, file),
@@ -125,108 +121,7 @@ It's important to understand the difference between regular access tokens and OB
     * Exchange for an OBO token to access Microsoft Graph API with delegated permissions
 
 **OBO (On-Behalf-Of) Token**:
-    A token obtained by exchanging your regular access token. This token is specifically for delegated access to Microsoft Graph API and must be used when:
-
-    * Accessing Microsoft Graph API endpoints (like /me, /users, /groups) on behalf of the user
-    * Reading user profile information from Graph with the user's delegated permissions
-    * Accessing user's mailbox, calendar, or other Microsoft 365 resources as the user
-    * Working with user's groups or organizational data with the user's permissions
-
-The OBO flow is specifically designed for delegated access scenarios where your application needs to access resources (like Microsoft Graph) on behalf of the authenticated user. The middleware handles this exchange automatically when OBO token storage is enabled.
-
-In most ADFS/Azure AD environments, you cannot use the regular access token to directly access Microsoft Graph API for delegated access - you must exchange it for an OBO token. This is because the regular access token is scoped to your application, while the OBO token is scoped to Microsoft Graph API with the user's delegated permissions.
-
-Key Utility Functions
----------------
-
-While the middleware handles most token management automatically, there are a few utility functions you may need to use directly:
-
-Get tokens for API calls
-~~~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: python
-
-    # For Microsoft Graph API (requires OBO token)
-    from django_auth_adfs.utils import get_obo_access_token
-
-    def graph_api_view(request):
-        obo_token = get_obo_access_token(request)
-        # Use the OBO token to call Microsoft Graph API...
-
-    # For your own APIs or APIs that accept your application's token
-    from django_auth_adfs.utils import get_access_token
-
-    def api_view(request):
-        token = get_access_token(request)
-        # Use the token to call your API...
-
-Using with Microsoft Graph API
-----------------------------
-
-If you need to call Microsoft Graph API, you must use the OBO token:
-
-.. code-block:: python
-
-    from django.contrib.auth.decorators import login_required
-    from django.http import JsonResponse
-    from django_auth_adfs.utils import get_obo_access_token
-    import requests
-
-    @login_required
-    def me_view(request):
-        """
-        Makes a request to the Microsoft Graph API /me endpoint using the OBO token
-        """
-        # Get the OBO token from the session
-        obo_token = get_obo_access_token(request)
-
-        if not obo_token:
-            return JsonResponse({"error": "No OBO token available"}, status=401)
-
-        # Make the request to Microsoft Graph API
-        headers = {
-            "Authorization": f"Bearer {obo_token}",
-            "Content-Type": "application/json",
-        }
-
-        try:
-            # Use the Microsoft Graph API endpoint
-            response = requests.get("https://graph.microsoft.com/v1.0/me", headers=headers)
-            response.raise_for_status()  # Raise an exception for 4XX/5XX responses
-
-            # Return the user profile data
-            return JsonResponse(response.json())
-
-        except requests.exceptions.RequestException as e:
-            # Handle request errors
-            return JsonResponse(
-                {"error": "Failed to fetch user profile", "details": str(e)}, status=500
-            )
-
-Using with External APIs
-----------------------
-
-If you need to call an external API that accepts your application's access token, use the regular access token:
-
-.. code-block:: python
-
-    from rest_framework.views import APIView
-    from rest_framework.response import Response
-    from django_auth_adfs.utils import get_access_token
-    import requests
-
-    class ExternalApiView(APIView):
-        def get(self, request):
-            # Get the access token
-            token = get_access_token(request)
-            if not token:
-                return Response({"error": "No access token available"}, status=401)
-
-            # Use the token to call an external API that accepts your application's token
-            headers = {"Authorization": f"Bearer {token}"}
-            response = requests.get("https://api.example.com/data", headers=headers)
-
-            return Response(response.json())
+    The OBO flow is specifically designed for delegated access scenarios where your application needs to access resources (like Microsoft Graph) on behalf of the authenticated user. The middleware handles this exchange automatically when OBO token storage is enabled.
 
 Considerations
 ------------
@@ -240,3 +135,93 @@ Considerations
 - OBO token storage is enabled by default but can be disabled with the ``ADFS_STORE_OBO_TOKEN`` setting.
 - For Microsoft Graph API, always use the OBO token, not the regular access token.
 - For your own application's APIs or APIs that directly trust your application, use the regular access token.
+
+Accessing Tokens in Your Views
+-----------------------------
+
+When building views that need to make API calls, you'll need to access the tokens stored in the session.
+
+Django-auth-adfs provides utility functions in the ``django_auth_adfs.utils`` module to help you access tokens safely.
+
+.. code-block:: python
+
+    # For your own APIs or APIs that trust your application directly
+    from django_auth_adfs.utils import get_access_token
+
+    # For Microsoft Graph API or other APIs requiring delegated access
+    from django_auth_adfs.utils import get_obo_access_token
+
+
+You could also directly access tokens from the session:
+
+.. code-block:: python
+
+    # Not recommended - lacks security checks and configuration awareness
+    access_token = request.session.get("ADFS_ACCESS_TOKEN")
+    obo_token = request.session.get("ADFS_OBO_ACCESS_TOKEN")
+
+
+Examples
+----------------------
+
+Here are practical examples of using these utility functions in your views:
+
+Using with Microsoft Graph API
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    from django.contrib.auth.decorators import login_required
+    from django.http import JsonResponse
+    from django_auth_adfs.utils import get_obo_access_token
+    import requests
+
+    @login_required
+    def me_view(request):
+        """Get the user's profile from Microsoft Graph API"""
+        obo_token = get_obo_access_token(request)
+
+        if not obo_token:
+            return JsonResponse({"error": "No OBO token available"}, status=401)
+
+        headers = {
+            "Authorization": f"Bearer {obo_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = requests.get("https://graph.microsoft.com/v1.0/me", headers=headers)
+            response.raise_for_status()
+            return JsonResponse(response.json())
+        except requests.exceptions.RequestException as e:
+            return JsonResponse(
+                {"error": "Failed to fetch user profile", "details": str(e)},
+                status=500
+            )
+
+Using with other resources
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The key difference is to use the get_access_token function to get the token for the resource you are accessing.
+
+This is different than the get_obo_access_token function, which is used for Microsoft Graph API delegated access in the previous example.
+
+.. code-block:: python
+
+    from rest_framework.views import APIView
+    from rest_framework.response import Response
+    from django_auth_adfs.utils import get_access_token
+    import requests
+
+    class ExternalApiView(APIView):
+        def get(self, request):
+            """Call an API that accepts your application's token"""
+            token = get_access_token(request)
+
+            if not token:
+                return Response({"error": "No access token available"}, status=401)
+
+            headers = {"Authorization": f"Bearer {token}"}
+            response = requests.get("https://api.example.com/data", headers=headers)
+
+            return Response(response.json())

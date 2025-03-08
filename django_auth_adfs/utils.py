@@ -1,5 +1,7 @@
 """
 Utility functions for django-auth-adfs.
+
+Only relevant if you are using the Token Lifecycle Middleware.
 """
 
 import datetime
