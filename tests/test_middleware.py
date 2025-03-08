@@ -640,5 +640,5 @@ class TokenLifecycleMiddlewareTests(TestCase):
         # A token encrypted with one salt should not be decryptable with another
         with patch("django_auth_adfs.utils.settings") as mock_settings:
             mock_settings.ADFS_TOKEN_ENCRYPTION_SALT = "different-salt"
-            with self.assertRaises(Exception):
-                _decrypt_token(custom_encrypted_token)
+            # The function catches exceptions and returns None, so check for None
+            self.assertIsNone(_decrypt_token(custom_encrypted_token))
