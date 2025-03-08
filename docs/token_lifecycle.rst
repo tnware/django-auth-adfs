@@ -1,11 +1,6 @@
 Token Lifecycle Middleware
 ==========================
 
-The Token Lifecycle Middleware serves two functions in applications using ADFS/Azure AD authentication:
-
-1. **Extended token grant flow**: Enables your application to make delegated API calls to Microsoft services and other resources on behalf of authenticated users
-2. **Enhanced Security**: Can ensure that users whose accounts have been disabled in Azure AD/ADFS are also logged out of your application
-
 Traditionally, django-auth-adfs is used **exclusively** as an authentication solution - it handles user authentication
 via ADFS/Azure AD and maps claims to Django users. It doesn't really care about the access tokens from Azure/ADFS after you've been authenticated.
 
@@ -16,12 +11,6 @@ after the authentication process. This creates a more integrated approach where:
 * Tokens obtained during authentication are managed and refreshed automatically
 * The application can make delegated API calls on behalf of the user
 * The middleware can optionally log out users when token refresh fails
-
-This middleware is particularly useful for applications that need to make delegated requests to Microsoft services on behalf of the user, or otherwise make additional
-requests to the Azure AD/ADFS application after the user has been authenticated.
-
-`While not required for basic authentication, it represents an architectural decision and whether you need this functionality depends on your specific requirements
-and your organization's ADFS/Azure AD configuration.`
 
 How it works
 ------------
@@ -154,7 +143,8 @@ Security Overview
 
 **Token Encryption**
 
-The Token Lifecycle Middleware automatically encrypts tokens before storing them in the session and decrypts them when they are retrieved. This provides an additional layer of security:
+Tokens are automatically encrypted before being stored in the session and decrypted when they are retrieved.
+The encryption is handled transparently by the middleware and utility functions. This provides an additional layer of security:
 
 - **Always Enabled**: Token encryption is always enabled and cannot be disabled
 - **Encryption Method**: Tokens are encrypted using the Fernet symmetric encryption algorithm
@@ -162,7 +152,6 @@ The Token Lifecycle Middleware automatically encrypts tokens before storing them
 - **Customizable Salt**: You can customize the encryption salt using the ``TOKEN_ENCRYPTION_SALT`` setting
 - **Transparent Operation**: Encryption and decryption happen automatically when tokens are stored or retrieved
 
-The encryption is handled transparently by the middleware and utility functions.
 
 **Signed Cookies Session Backend Restriction**
 

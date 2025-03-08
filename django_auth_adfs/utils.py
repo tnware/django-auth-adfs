@@ -6,11 +6,13 @@ Only relevant if you are using the Token Lifecycle Middleware.
 
 import logging
 import base64
-from django.conf import settings as django_settings
-from django_auth_adfs.config import settings
+
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+from django.conf import settings as django_settings
+from django_auth_adfs.config import settings
 
 logger = logging.getLogger("django_auth_adfs")
 
@@ -25,13 +27,9 @@ def _get_encryption_key():
         bytes: A 32-byte key suitable for Fernet encryption
     """
     # Use Django's SECRET_KEY to derive a suitable encryption key
-    # This ensures we have a stable key that's unique to this Django instance
-
-    # Allow customizing the salt through settings
     default_salt = b"django_auth_adfs_token_encryption"
     salt = getattr(settings, "TOKEN_ENCRYPTION_SALT", default_salt)
 
-    # Convert string salt to bytes if needed
     if isinstance(salt, str):
         salt = salt.encode()
 
@@ -99,7 +97,6 @@ def _is_signed_cookies_disabled():
         django_settings.SESSION_ENGINE
         == "django.contrib.sessions.backends.signed_cookies"
     )
-    # Always disable token storage for signed_cookies for security reasons
     return using_signed_cookies
 
 
@@ -118,7 +115,6 @@ def get_access_token(request):
     if not hasattr(request, "session"):
         return None
 
-    # Don't retrieve tokens from signed_cookies if disabled
     if _is_signed_cookies_disabled():
         logger.debug("Token retrieval from signed_cookies session is disabled")
         return None
@@ -142,12 +138,10 @@ def get_obo_access_token(request):
     if not hasattr(request, "session"):
         return None
 
-    # Don't retrieve tokens from signed_cookies if disabled
     if _is_signed_cookies_disabled():
         logger.debug("Token retrieval from signed_cookies session is disabled")
         return None
 
-    # Check if OBO token storage is enabled
     store_obo_token = getattr(settings, "STORE_OBO_TOKEN", True)
     if not store_obo_token:
         logger.debug("OBO token storage is disabled")
