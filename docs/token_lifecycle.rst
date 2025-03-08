@@ -301,6 +301,7 @@ The following example code demonstrates a debug view to check the values of the 
     from django.contrib.auth.decorators import login_required
     from django.http import JsonResponse
     from django_auth_adfs.utils import get_access_token, get_obo_access_token
+    from datetime import datetime
 
     @login_required
     def debug_view(request):
@@ -335,22 +336,88 @@ The following example code demonstrates a debug view to check the values of the 
             except (ValueError, TypeError) as e:
                 session_info["expiration_parse_error"] = str(e)
 
-        # Add token preview if available (first/last 10 chars for security)
-        access_token = get_access_token(request)
-        if access_token:
-            if len(access_token) > 20:
-                session_info["access_token_preview"] = f"{access_token[:10]}...{access_token[-10:]}"
-            session_info["access_token_length"] = len(access_token)
+        # Show raw encrypted tokens for debugging
+        if "ADFS_ACCESS_TOKEN" in request.session:
+            raw_token = request.session["ADFS_ACCESS_TOKEN"]
+            session_info["raw_token_preview"] = f"{raw_token[:10]}...{raw_token[-10:]}"
+            session_info["raw_token_length"] = len(raw_token)
+
+            # Try to decode as JWT without decryption (should fail if properly encrypted)
+            try:
+                import jwt
+
+                jwt.decode(raw_token, options={"verify_signature": False})
+                session_info["is_encrypted"] = False
+            except:
+                session_info["is_encrypted"] = True
+
+        # Get properly decrypted access token
+        try:
+            from django_auth_adfs.utils import get_access_token
+
+            access_token = get_access_token(request)
+            session_info["decrypted_access_token_available"] = access_token is not None
+
+            if access_token:
+                if len(access_token) > 20:
+                    session_info["decrypted_access_token_preview"] = (
+                        f"{access_token[:10]}...{access_token[-10:]}"
+                    )
+                session_info["decrypted_access_token_length"] = len(access_token)
+
+                # Try to decode as JWT (should succeed if properly decrypted)
+                try:
+                    import jwt
+
+                    decoded = jwt.decode(access_token, options={"verify_signature": False})
+                    session_info["jwt_decode_success"] = True
+                    # Add some basic JWT info without exposing sensitive data
+                    if "exp" in decoded:
+                        from datetime import datetime
+
+                        exp_time = datetime.fromtimestamp(decoded["exp"])
+                        session_info["jwt_expiry"] = exp_time.isoformat()
+                except Exception as e:
+                    session_info["jwt_decode_error"] = str(e)
+        except Exception as e:
+            session_info["access_token_error"] = f"Error getting access token: {str(e)}"
 
         # Check if OBO token is available
-        obo_token = get_obo_access_token(request)
-        obo_info = {
-            "has_obo_token": obo_token is not None,
-        }
-        if obo_token:
-            if len(obo_token) > 20:
-                obo_info["obo_token_preview"] = f"{obo_token[:10]}...{obo_token[-10:]}"
-            obo_info["obo_token_length"] = len(obo_token)
+        try:
+            from django_auth_adfs.utils import get_obo_access_token
+
+            obo_token = get_obo_access_token(request)
+            obo_info = {
+                "has_obo_token": obo_token is not None,
+            }
+
+            # Show raw encrypted OBO token if available
+            if "ADFS_OBO_ACCESS_TOKEN" in request.session:
+                raw_obo = request.session["ADFS_OBO_ACCESS_TOKEN"]
+                obo_info["raw_obo_preview"] = f"{raw_obo[:10]}...{raw_obo[-10:]}"
+                obo_info["raw_obo_length"] = len(raw_obo)
+
+            if obo_token:
+                if len(obo_token) > 20:
+                    obo_info["obo_token_preview"] = f"{obo_token[:10]}...{obo_token[-10:]}"
+                obo_info["obo_token_length"] = len(obo_token)
+
+                # Try to decode as JWT (should succeed if properly decrypted)
+                try:
+                    import jwt
+
+                    decoded = jwt.decode(obo_token, options={"verify_signature": False})
+                    obo_info["jwt_decode_success"] = True
+                    # Add some basic JWT info without exposing sensitive data
+                    if "exp" in decoded:
+                        from datetime import datetime
+
+                        exp_time = datetime.fromtimestamp(decoded["exp"])
+                        obo_info["jwt_expiry"] = exp_time.isoformat()
+                except Exception as e:
+                    obo_info["jwt_decode_error"] = str(e)
+        except Exception as e:
+            obo_info = {"error": f"Error getting OBO token: {str(e)}"}
 
         # Return all the collected information
         return JsonResponse(
