@@ -19,12 +19,22 @@ def _get_encryption_key():
     """
     Derive a Fernet encryption key from Django's SECRET_KEY.
 
+    The salt can be customized through the ADFS_TOKEN_ENCRYPTION_SALT setting.
+
     Returns:
         bytes: A 32-byte key suitable for Fernet encryption
     """
     # Use Django's SECRET_KEY to derive a suitable encryption key
     # This ensures we have a stable key that's unique to this Django instance
-    salt = b"django_auth_adfs_token_encryption"  # Static salt
+
+    # Allow customizing the salt through settings
+    default_salt = b"django_auth_adfs_token_encryption"
+    salt = getattr(settings, "ADFS_TOKEN_ENCRYPTION_SALT", default_salt)
+
+    # Convert string salt to bytes if needed
+    if isinstance(salt, str):
+        salt = salt.encode()
+
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,

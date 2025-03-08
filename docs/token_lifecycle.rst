@@ -71,6 +71,16 @@ You can configure the token lifecycle behavior with these settings in your Djang
     # Enable or disable OBO token storage for Microsoft Graph API (default: True)
     ADFS_STORE_OBO_TOKEN = True
 
+    # Custom salt for token encryption (optional)
+    # If not specified, a default salt is used
+    ADFS_TOKEN_ENCRYPTION_SALT = "your-custom-salt-string"
+
+.. warning::
+    If you change the ``ADFS_TOKEN_ENCRYPTION_SALT`` after tokens have been stored in sessions, those tokens will no longer be decryptable.
+    This effectively invalidates all existing tokens, requiring users to re-authenticate.
+
+    Consider this when deploying changes to the salt in production environments.
+
 .. note::
     By default (``ADFS_STORE_OBO_TOKEN = True``), the middleware will automatically request and store OBO tokens
     for Microsoft Graph API access. If your application doesn't need to access Microsoft Graph API,
@@ -123,6 +133,7 @@ The Token Lifecycle Middleware automatically encrypts tokens before storing them
 - **Always Enabled**: Token encryption is always enabled and cannot be disabled
 - **Encryption Method**: Tokens are encrypted using the Fernet symmetric encryption algorithm
 - **Encryption Key**: The key is derived from Django's ``SECRET_KEY`` using PBKDF2
+- **Customizable Salt**: You can customize the encryption salt using the ``ADFS_TOKEN_ENCRYPTION_SALT`` setting
 - **Transparent Operation**: Encryption and decryption happen automatically when tokens are stored or retrieved
 - **Defense in Depth**: Even if the session storage is compromised, the tokens remain encrypted
 

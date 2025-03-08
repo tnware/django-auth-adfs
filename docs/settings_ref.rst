@@ -507,6 +507,16 @@ ADFS_TOKEN_REFRESH_THRESHOLD
 Used by the ``TokenLifecycleMiddleware`` to determine how long before token expiration to attempt a refresh.
 This setting controls how proactively the middleware will refresh tokens before they expire.
 
+For example, with the default value of 300 seconds (5 minutes), if a token is set to expire in 4 minutes,
+the middleware will attempt to refresh it during the next request. This helps ensure that users don't
+experience disruptions due to token expiration during active sessions.
+
+.. code-block:: python
+
+    # In your Django settings.py
+    # Refresh tokens 10 minutes before they expire
+    ADFS_TOKEN_REFRESH_THRESHOLD = 600
+
 ADFS_STORE_OBO_TOKEN
 ------------------
 * **Default**: ``True``
@@ -519,3 +529,27 @@ for Microsoft Graph API. Set to ``False`` if you don't need to access Microsoft 
    When using the ``TokenLifecycleMiddleware`` with Django's ``signed_cookies`` session backend, token storage
    is always disabled for security reasons. This behavior cannot be overridden. If you need token storage,
    you must use a different session backend like database or cache-based sessions.
+
+ADFS_TOKEN_ENCRYPTION_SALT
+--------------------------
+* **Default**: ``b"django_auth_adfs_token_encryption"``
+* **Type**: ``string``
+
+Used by the ``TokenLifecycleMiddleware`` to derive an encryption key for token encryption.
+The salt is combined with Django's ``SECRET_KEY`` to create a unique encryption key.
+
+You can customize this value to use a different salt for token encryption:
+
+.. code-block:: python
+
+    # In your Django settings.py
+    ADFS_TOKEN_ENCRYPTION_SALT = "your-custom-salt-string"
+
+While the default value is defined as a bytes literal (with the ``b`` prefix) in the code,
+you should simply provide a regular string in your settings. The middleware automatically
+handles the conversion to bytes as needed.
+
+.. warning::
+   If you change this setting after tokens have been stored in sessions, those tokens will no longer be decryptable.
+   This effectively invalidates all existing tokens, requiring users to re-authenticate.
+   Consider this when deploying changes to the salt in production environments.
