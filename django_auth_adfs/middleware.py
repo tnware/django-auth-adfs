@@ -5,12 +5,10 @@ Based on https://djangosnippets.org/snippets/1179/
 import datetime
 import logging
 from re import compile
-from importlib import import_module
 
 from django.conf import settings as django_settings
 from django.contrib.auth.views import redirect_to_login
 from django.urls import reverse
-from django.dispatch import receiver
 
 from django_auth_adfs.exceptions import MFARequired
 from django_auth_adfs.config import settings, provider_config
@@ -85,11 +83,14 @@ class TokenLifecycleMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
         # Default settings
-        self.threshold = getattr(settings, "ADFS_TOKEN_REFRESH_THRESHOLD", 300)  # 5 minutes
+        self.threshold = getattr(
+            settings, "ADFS_TOKEN_REFRESH_THRESHOLD", 300
+        )  # 5 minutes
 
         # Check if using signed_cookies session backend
         self.using_signed_cookies = (
-            django_settings.SESSION_ENGINE == "django.contrib.sessions.backends.signed_cookies"
+            django_settings.SESSION_ENGINE
+            == "django.contrib.sessions.backends.signed_cookies"
         )
 
         # Token storage is always disabled for signed_cookies for security reasons
@@ -351,7 +352,9 @@ class TokenLifecycleMiddleware:
         except Exception as e:
             logger.exception(f"Error refreshing OBO token: {e}")
 
-    def _capture_tokens_from_auth(self, sender, user, claims, adfs_response=None, **kwargs):
+    def _capture_tokens_from_auth(
+        self, sender, user, claims, adfs_response=None, **kwargs
+    ):
         """
         Signal handler to capture tokens during authentication and store them on the user object.
         This ensures the tokens are available for the middleware to store in the session.
