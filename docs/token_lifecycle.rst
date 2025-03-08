@@ -1,5 +1,5 @@
 Token Lifecycle Middleware
-========================
+==========================
 
 Traditionally, django-auth-adfs is used **exclusively** as an authentication solution - it handles user authentication
 via ADFS/Azure AD and maps claims to Django users. It doesn't really care about the access tokens from Azure/ADFS after you've been authenticated.
@@ -9,7 +9,7 @@ your organization, you might want to make delegated requests to Microsoft Graph 
 The Token Lifecycle Middleware extends django-auth-adfs beyond pure authentication to also handle the complete lifecycle of access tokens
 after the authentication process. This creates a more integrated approach where:
 
-* The same application registration handles both authentication and API access
+* The same application registration handles both authentication and resource access
 * Tokens obtained during authentication are managed and refreshed automatically
 * The application can make delegated API calls on behalf of the user
 
@@ -20,7 +20,7 @@ While not required for basic authentication, it represents an architectural deci
 and your organization's ADFS/Azure AD configuration.
 
 How it works
------------
+------------
 
 The ``TokenLifecycleMiddleware`` handles the entire token lifecycle:
 
@@ -42,7 +42,7 @@ Read more: https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-o
     We recommend thoroughly testing this feature in your specific environment before deploying to production.
 
 Configuration
-------------
+-------------
 
 To enable the token lifecycle middleware, add it to your ``MIDDLEWARE`` setting in your Django settings file:
 
@@ -70,8 +70,14 @@ You can configure the token lifecycle behavior with these settings in your Djang
     # Enable or disable OBO token storage for Microsoft Graph API (default: True)
     ADFS_STORE_OBO_TOKEN = True
 
+.. note::
+    By default (``ADFS_STORE_OBO_TOKEN = True``), the middleware will automatically request and store OBO tokens
+    for Microsoft Graph API access. If your application doesn't need to access Microsoft Graph API,
+    you can set ``ADFS_STORE_OBO_TOKEN = False`` to disable this functionality completely.
+    See the "Disabling OBO Token Functionality" section for more details.
+
 Azure AD Application Configuration
---------------------------------
+----------------------------------
 
 When using the Token Lifecycle Middleware, your Azure AD application registration needs additional permissions
 beyond those required for simple authentication. This extends the standard authentication-only setup described in the :doc:`azure_ad_config_guide` with additional
@@ -83,10 +89,10 @@ API permissions needed for delegated access.
     If a users refresh token has expired, the user will be required to re-authenticate to continue making delegated requests.
 
 Security Considerations
----------------------
+-----------------------
 
 Signed Cookies Session Backend
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The middleware will not store tokens in the session when using Django's ``signed_cookies`` session backend:
 
@@ -108,7 +114,7 @@ If you're using the ``signed_cookies`` session backend and need token storage, y
     tokens are stored securely on the server and only a session ID is stored in the cookie.
 
 Understanding Access Tokens vs. OBO Tokens
-----------------------------------------
+------------------------------------------
 
 It's important to understand the difference between regular access tokens and OBO (On-Behalf-Of) tokens, especially in the context of delegated access versus application access:
 
@@ -130,7 +136,7 @@ It's important to understand the difference between regular access tokens and OB
     The OBO flow is specifically designed for delegated access scenarios where your application needs to access resources (like Microsoft Graph) on behalf of the authenticated user. The middleware handles this exchange automatically when OBO token storage is enabled.
 
 Considerations
-------------
+--------------
 
 - The middleware will automatically capture and store tokens during authentication using signals.
 - You don't need to modify your views or authentication backends to store tokens.
@@ -142,12 +148,31 @@ Considerations
 - For Microsoft Graph API, always use the OBO token, not the regular access token.
 - For your own application's APIs or APIs that directly trust your application, use the regular access token.
 
+Disabling OBO Token Functionality
+---------------------------------
+
+By default, the Token Lifecycle Middleware automatically requests and stores OBO tokens for Microsoft Graph API access. If you don't need this functionality (for example, if your application doesn't interact with Microsoft Graph API), you can disable it completely:
+
+.. code-block:: python
+
+    # In your Django settings.py
+    ADFS_STORE_OBO_TOKEN = False
+
+When this setting is ``False``:
+
+1. The middleware will not request OBO tokens during authentication
+2. The middleware will not store OBO tokens in the session
+3. The middleware will not refresh OBO tokens
+4. The ``get_obo_access_token`` utility function will always return ``None``
+
+Note that disabling OBO tokens doesn't affect the regular access token functionality. Your application will still be able to use the access token obtained during authentication for its own resources and APIs that directly trust your application.
+
 Accessing Tokens in Your Views
------------------------------
+------------------------------
 
-When building views that need to make API calls, you'll need to access the tokens stored in the session.
+When building views that need to make requests using the Azure AD/ADFS tokens, you'll need to access the tokens stored in the session.
 
-Django-auth-adfs provides utility functions in the ``django_auth_adfs.utils`` module to help you access tokens safely.
+Token Lifecycle Middleware provides utility functions in the ``django_auth_adfs.utils`` module to help you access tokens safely.
 
 .. code-block:: python
 
@@ -162,7 +187,6 @@ You could also directly access tokens from the session:
 
 .. code-block:: python
 
-    # Not recommended - lacks security checks and configuration awareness
     access_token = request.session.get("ADFS_ACCESS_TOKEN")
     obo_token = request.session.get("ADFS_OBO_ACCESS_TOKEN")
 
@@ -173,7 +197,11 @@ Examples
 Here are practical examples of using these utility functions in your views:
 
 Using with Microsoft Graph API
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In this flow, we will exchange our access token from the authentication process for an OBO token to access Microsoft Graph API.
+
+This is the recommended flow for delegated access to Microsoft Graph API.
 
 .. code-block:: python
 
@@ -206,11 +234,11 @@ Using with Microsoft Graph API
             )
 
 Using with other resources
-~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The key difference is to use the get_access_token function to get the token for the resource you are accessing.
+The key difference here is to use the ``get_access_token`` function to get the token for the resource you are accessing.
 
-This is different than the get_obo_access_token function, which is used for Microsoft Graph API delegated access in the previous example.
+This is different than the ``get_obo_access_token`` function, which is used for Microsoft Graph API delegated access in the previous example.
 
 .. code-block:: python
 
@@ -231,3 +259,85 @@ This is different than the get_obo_access_token function, which is used for Micr
             response = requests.get("https://api.example.com/data", headers=headers)
 
             return Response(response.json())
+
+Debug view
+----------
+
+The following example code demonstrates a debug view to check the values of the tokens stored in the session:
+
+.. code-block:: python
+
+    from django.contrib.auth.decorators import login_required
+    from django.http import JsonResponse
+
+    @login_required
+    def debug_view(request):
+        """
+        Debug view that provides detailed information about the authentication state,
+        tokens, and session data.
+        """
+        if not request.user.is_authenticated:
+            return JsonResponse({"authenticated": False})
+
+        # Basic session token info
+        session_info = {
+            "has_access_token": "ADFS_ACCESS_TOKEN" in request.session,
+            "has_refresh_token": "ADFS_REFRESH_TOKEN" in request.session,
+            "has_expires_at": "ADFS_TOKEN_EXPIRES_AT" in request.session,
+        }
+
+        # Add token expiration details if available
+        if "ADFS_TOKEN_EXPIRES_AT" in request.session:
+            from datetime import datetime
+
+            try:
+                expires_at = datetime.fromisoformat(
+                    request.session["ADFS_TOKEN_EXPIRES_AT"]
+                )
+                now = datetime.now()
+                session_info["token_expires_at"] = expires_at.isoformat()
+                session_info["expires_in_seconds"] = max(
+                    0, int((expires_at - now).total_seconds())
+                )
+                session_info["is_expired"] = expires_at <= now
+            except (ValueError, TypeError) as e:
+                session_info["expiration_parse_error"] = str(e)
+
+        # Add token preview if available (first/last 10 chars for security)
+        if "ADFS_ACCESS_TOKEN" in request.session:
+            token = request.session["ADFS_ACCESS_TOKEN"]
+            if len(token) > 20:
+                session_info["access_token_preview"] = f"{token[:10]}...{token[-10:]}"
+            session_info["access_token_length"] = len(token)
+
+        # Check if OBO token is available
+        try:
+            from django_auth_adfs.utils import get_obo_access_token
+
+            obo_token = get_obo_access_token(request)
+            obo_info = {
+                "has_obo_token": obo_token is not None,
+            }
+            if obo_token:
+                if len(obo_token) > 20:
+                    obo_info["obo_token_preview"] = f"{obo_token[:10]}...{obo_token[-10:]}"
+                obo_info["obo_token_length"] = len(obo_token)
+        except Exception as e:
+            obo_info = {"error": f"Error getting OBO token: {str(e)}"}
+
+        # Return all the collected information
+        return JsonResponse(
+            {
+                "authenticated": True,
+                "user": {
+                    "id": request.user.id,
+                    "username": request.user.username,
+                    "email": request.user.email,
+                    "is_staff": request.user.is_staff,
+                    "is_superuser": request.user.is_superuser,
+                },
+                "session_tokens": session_info,
+                "obo_token": obo_info,
+            },
+            json_dumps_params={"indent": 2},
+        )
