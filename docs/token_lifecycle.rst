@@ -41,6 +41,7 @@ Read more: https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-o
 
     We recommend thoroughly testing this feature in your specific environment before deploying to production.
 
+
 Configuration
 -------------
 
@@ -74,7 +75,19 @@ You can configure the token lifecycle behavior with these settings in your Djang
     By default (``ADFS_STORE_OBO_TOKEN = True``), the middleware will automatically request and store OBO tokens
     for Microsoft Graph API access. If your application doesn't need to access Microsoft Graph API,
     you can set ``ADFS_STORE_OBO_TOKEN = False`` to disable this functionality completely.
-    See the "Disabling OBO Token Functionality" section for more details.
+    See `here <#disabling-obo-token-functionality>`_ for more details.
+
+Considerations
+--------------
+
+- The middleware will automatically capture and store tokens during authentication using signals.
+- You don't need to modify your views or authentication backends to store tokens.
+- Token refresh only works for authenticated users.
+- If the refresh token is invalid or expired, the middleware will not be able to refresh the access token.
+- The middleware will not log the user out if the refresh token is invalid or expired.
+- The middleware will not store tokens in the session when using the ``signed_cookies`` session backend by default.
+- OBO token storage is enabled by default but can be disabled with the ``ADFS_STORE_OBO_TOKEN`` setting.
+- Using the OBO token versus the regular access token is dependent on the resources you are accessing and the permissions granted to your ADFS/Azure AD application. See `here <#understanding-access-tokens-vs-obo-tokens>`_ for more details.
 
 Azure AD Application Configuration
 ----------------------------------
@@ -88,11 +101,22 @@ API permissions needed for delegated access.
 
     If a users refresh token has expired, the user will be required to re-authenticate to continue making delegated requests.
 
-Security Considerations
+Security Overview
 -----------------------
 
-Signed Cookies Session Backend
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+**Token Encryption**
+
+The Token Lifecycle Middleware automatically encrypts tokens before storing them in the session and decrypts them when they are retrieved. This provides an additional layer of security:
+
+- **Always Enabled**: Token encryption is always enabled and cannot be disabled
+- **Encryption Method**: Tokens are encrypted using the Fernet symmetric encryption algorithm
+- **Encryption Key**: The key is derived from Django's ``SECRET_KEY`` using PBKDF2
+- **Transparent Operation**: Encryption and decryption happen automatically when tokens are stored or retrieved
+- **Defense in Depth**: Even if the session storage is compromised, the tokens remain encrypted
+
+The encryption is handled transparently by the middleware and utility functions.
+
+**Signed Cookies Session Backend Restriction**
 
 The middleware will not store tokens in the session when using Django's ``signed_cookies`` session backend:
 
@@ -101,52 +125,21 @@ The middleware will not store tokens in the session when using Django's ``signed
     # This will not work with the token lifecycle middleware
     SESSION_ENGINE = 'django.contrib.sessions.backends.signed_cookies'
 
-This is for security reasons:
+This is for a few reasons:
 
 1. **Size Limitations**: Cookies have size limitations (typically 4KB), which may be exceeded by tokens
 2. **Security Risks**: Storing sensitive tokens in cookies increases the risk of token theft
 3. **Performance**: Large cookies are sent with every request, increasing bandwidth usage
 
-If you're using the ``signed_cookies`` session backend and need token storage, you wont be able to use the token lifecycle middleware.
+If you're using the ``signed_cookies`` session backend and need token storage, you won't be able to use the token lifecycle middleware.
 
 .. note::
     This restriction only applies to the ``signed_cookies`` session backend. For other session backends (database, cache, file),
     tokens are stored securely on the server and only a session ID is stored in the cookie.
 
-Understanding Access Tokens vs. OBO Tokens
-------------------------------------------
+**Automatic OBO Token Acquisition**
 
-It's important to understand the difference between regular access tokens and OBO (On-Behalf-Of) tokens, especially in the context of delegated access versus application access:
-
-**Delegated Access vs. Application Access**:
-    There are two primary ways an application can access resources in Azure AD/ADFS:
-
-    * **Application Access**: The application accesses resources directly with its own identity, not on behalf of a user. This is used for background processes, daemons, or server-to-server scenarios.
-
-    * **Delegated Access**: The application accesses resources on behalf of a signed-in user. The permissions are delegated from the user to the application, and the application operates within the constraints of the user's permissions.
-
-**Regular Access Token**:
-    The token obtained during authentication with ADFS. This token is typically scoped to your application and can be used to:
-
-    * Access your own application's resources
-    * Access resources that trust your application directly
-    * Exchange for an OBO token to access Microsoft Graph API with delegated permissions
-
-**OBO (On-Behalf-Of) Token**:
-    The OBO flow is specifically designed for delegated access scenarios where your application needs to access resources (like Microsoft Graph) on behalf of the authenticated user. The middleware handles this exchange automatically when OBO token storage is enabled.
-
-Considerations
---------------
-
-- The middleware will automatically capture and store tokens during authentication using signals.
-- You don't need to modify your views or authentication backends to store tokens.
-- Token refresh only works for authenticated users.
-- If the refresh token is invalid or expired, the middleware will not be able to refresh the access token.
-- The middleware will not log the user out if the refresh token is invalid or expired.
-- The middleware will not store tokens in the session when using the ``signed_cookies`` session backend by default.
-- OBO token storage is enabled by default but can be disabled with the ``ADFS_STORE_OBO_TOKEN`` setting.
-- For Microsoft Graph API, always use the OBO token, not the regular access token.
-- For your own application's APIs or APIs that directly trust your application, use the regular access token.
+By default, the middleware automatically requests OBO tokens during authentication. If your application doesn't need OBO tokens, you can disable this behavior to reduce unnecessary token requests (see `here <#disabling-obo-token-functionality>`_ for more details).
 
 Disabling OBO Token Functionality
 ---------------------------------
@@ -167,12 +160,14 @@ When this setting is ``False``:
 
 Note that disabling OBO tokens doesn't affect the regular access token functionality. Your application will still be able to use the access token obtained during authentication for its own resources and APIs that directly trust your application.
 
+See `here <#understanding-access-tokens-vs-obo-tokens>`_ for more details.
+
 Accessing Tokens in Your Views
 ------------------------------
 
 When building views that need to make requests using the Azure AD/ADFS tokens, you'll need to access the tokens stored in the session.
 
-Token Lifecycle Middleware provides utility functions in the ``django_auth_adfs.utils`` module to help you access tokens safely.
+Since tokens are encrypted in the session, Token Lifecycle Middleware provides utility functions in the ``django_auth_adfs.utils`` module to help you access tokens safely:
 
 .. code-block:: python
 
@@ -182,14 +177,11 @@ Token Lifecycle Middleware provides utility functions in the ``django_auth_adfs.
     # For Microsoft Graph API or other APIs requiring delegated access
     from django_auth_adfs.utils import get_obo_access_token
 
+These utility functions automatically handle decryption of the tokens, so you don't need to worry about the encryption details.
 
-You could also directly access tokens from the session:
-
-.. code-block:: python
-
-    access_token = request.session.get("ADFS_ACCESS_TOKEN")
-    obo_token = request.session.get("ADFS_OBO_ACCESS_TOKEN")
-
+.. warning::
+    You should always use these utility functions to access tokens rather than accessing them directly from the session.
+    Direct access to ``request.session["ADFS_ACCESS_TOKEN"]`` will give you the encrypted token, not the actual token value.
 
 Examples
 ----------------------
@@ -269,6 +261,7 @@ The following example code demonstrates a debug view to check the values of the 
 
     from django.contrib.auth.decorators import login_required
     from django.http import JsonResponse
+    from django_auth_adfs.utils import get_access_token, get_obo_access_token
 
     @login_required
     def debug_view(request):
@@ -304,26 +297,21 @@ The following example code demonstrates a debug view to check the values of the 
                 session_info["expiration_parse_error"] = str(e)
 
         # Add token preview if available (first/last 10 chars for security)
-        if "ADFS_ACCESS_TOKEN" in request.session:
-            token = request.session["ADFS_ACCESS_TOKEN"]
-            if len(token) > 20:
-                session_info["access_token_preview"] = f"{token[:10]}...{token[-10:]}"
-            session_info["access_token_length"] = len(token)
+        access_token = get_access_token(request)
+        if access_token:
+            if len(access_token) > 20:
+                session_info["access_token_preview"] = f"{access_token[:10]}...{access_token[-10:]}"
+            session_info["access_token_length"] = len(access_token)
 
         # Check if OBO token is available
-        try:
-            from django_auth_adfs.utils import get_obo_access_token
-
-            obo_token = get_obo_access_token(request)
-            obo_info = {
-                "has_obo_token": obo_token is not None,
-            }
-            if obo_token:
-                if len(obo_token) > 20:
-                    obo_info["obo_token_preview"] = f"{obo_token[:10]}...{obo_token[-10:]}"
-                obo_info["obo_token_length"] = len(obo_token)
-        except Exception as e:
-            obo_info = {"error": f"Error getting OBO token: {str(e)}"}
+        obo_token = get_obo_access_token(request)
+        obo_info = {
+            "has_obo_token": obo_token is not None,
+        }
+        if obo_token:
+            if len(obo_token) > 20:
+                obo_info["obo_token_preview"] = f"{obo_token[:10]}...{obo_token[-10:]}"
+            obo_info["obo_token_length"] = len(obo_token)
 
         # Return all the collected information
         return JsonResponse(
@@ -341,3 +329,25 @@ The following example code demonstrates a debug view to check the values of the 
             },
             json_dumps_params={"indent": 2},
         )
+
+Understanding Access Tokens vs. OBO Tokens
+------------------------------------------
+
+It's important to understand the difference between regular access tokens and OBO (On-Behalf-Of) tokens, especially in the context of delegated access versus application access:
+
+**Delegated Access vs. Application Access**:
+    There are two primary ways an application can access resources in Azure AD/ADFS:
+
+    * **Application Access**: The application accesses resources directly with its own identity, not on behalf of a user. This is used for background processes, daemons, or server-to-server scenarios.
+
+    * **Delegated Access**: The application accesses resources on behalf of a signed-in user. The permissions are delegated from the user to the application, and the application operates within the constraints of the user's permissions.
+
+**Regular Access Token**:
+    The token obtained during authentication with ADFS. This token is typically scoped to your application and can be used to:
+
+    * Access your own application's resources
+    * Access resources that trust your application directly
+    * Exchange for an OBO token to access Microsoft Graph API with delegated permissions
+
+**OBO (On-Behalf-Of) Token**:
+    The OBO flow is specifically designed for delegated access scenarios where your application needs to access resources (like Microsoft Graph) on behalf of the authenticated user. The middleware handles this exchange automatically when OBO token storage is enabled.

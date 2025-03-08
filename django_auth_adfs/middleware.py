@@ -13,6 +13,7 @@ from django.urls import reverse
 from django_auth_adfs.exceptions import MFARequired
 from django_auth_adfs.config import settings, provider_config
 from django_auth_adfs.signals import post_authenticate
+from django_auth_adfs.utils import _encrypt_token
 
 LOGIN_EXEMPT_URLS = [
     compile(django_settings.LOGIN_URL.lstrip('/')),
@@ -141,19 +142,21 @@ class TokenLifecycleMiddleware:
 
         # Check if user has tokens that aren't in the session
         if hasattr(user, "access_token") and user.access_token:
-            if (
+            encrypted_token = _encrypt_token(user.access_token)
+            if encrypted_token and (
                 not request.session.get("ADFS_ACCESS_TOKEN")
-                or request.session.get("ADFS_ACCESS_TOKEN") != user.access_token
+                or request.session.get("ADFS_ACCESS_TOKEN") != encrypted_token
             ):
-                request.session["ADFS_ACCESS_TOKEN"] = user.access_token
+                request.session["ADFS_ACCESS_TOKEN"] = encrypted_token
                 session_modified = True
 
         if hasattr(user, "refresh_token") and user.refresh_token:
-            if (
+            encrypted_token = _encrypt_token(user.refresh_token)
+            if encrypted_token and (
                 not request.session.get("ADFS_REFRESH_TOKEN")
-                or request.session.get("ADFS_REFRESH_TOKEN") != user.refresh_token
+                or request.session.get("ADFS_REFRESH_TOKEN") != encrypted_token
             ):
-                request.session["ADFS_REFRESH_TOKEN"] = user.refresh_token
+                request.session["ADFS_REFRESH_TOKEN"] = encrypted_token
                 session_modified = True
 
         if hasattr(user, "token_expires_at") and user.token_expires_at:
@@ -171,11 +174,12 @@ class TokenLifecycleMiddleware:
             and hasattr(user, "obo_access_token")
             and user.obo_access_token
         ):
-            if (
+            encrypted_token = _encrypt_token(user.obo_access_token)
+            if encrypted_token and (
                 not request.session.get("ADFS_OBO_ACCESS_TOKEN")
-                or request.session.get("ADFS_OBO_ACCESS_TOKEN") != user.obo_access_token
+                or request.session.get("ADFS_OBO_ACCESS_TOKEN") != encrypted_token
             ):
-                request.session["ADFS_OBO_ACCESS_TOKEN"] = user.obo_access_token
+                request.session["ADFS_OBO_ACCESS_TOKEN"] = encrypted_token
                 session_modified = True
 
         # Store OBO token expiration if available
@@ -199,34 +203,31 @@ class TokenLifecycleMiddleware:
 
     def _handle_token_refresh(self, request):
         """
-        Check if the token needs to be refreshed and refresh it if necessary
+        Check if the access token needs to be refreshed and refresh it if needed
         """
-        # Skip token refresh if using signed_cookies
+        # Skip if using signed_cookies
         if self.using_signed_cookies:
             return
 
-        # Check if we have the necessary session data
-        if not all(
-            key in request.session
-            for key in [
-                "ADFS_ACCESS_TOKEN",
-                "ADFS_REFRESH_TOKEN",
-                "ADFS_TOKEN_EXPIRES_AT",
-            ]
+        # Check if we have the necessary data
+        if (
+            "ADFS_ACCESS_TOKEN" not in request.session
+            or "ADFS_REFRESH_TOKEN" not in request.session
+            or "ADFS_TOKEN_EXPIRES_AT" not in request.session
         ):
             return
 
         try:
-            # Parse the expiration time
+            # Check if the token is about to expire
             expires_at = datetime.datetime.fromisoformat(
                 request.session["ADFS_TOKEN_EXPIRES_AT"]
             )
-
-            # Check if the token is about to expire
             now = datetime.datetime.now()
+
+            # If the token is about to expire, refresh it
             if (expires_at - now).total_seconds() <= self.threshold:
                 logger.debug("Access token is about to expire, refreshing...")
-                self._refresh_token(request)
+                self._refresh_tokens(request)
 
             # Check if OBO token needs to be refreshed
             if (
@@ -237,28 +238,38 @@ class TokenLifecycleMiddleware:
                 obo_expires_at = datetime.datetime.fromisoformat(
                     request.session["ADFS_OBO_TOKEN_EXPIRES_AT"]
                 )
-
                 if (obo_expires_at - now).total_seconds() <= self.threshold:
                     logger.debug("OBO token is about to expire, refreshing...")
                     self._refresh_obo_token(request)
 
-        except (ValueError, TypeError) as e:
+        except Exception as e:
             logger.warning(f"Error checking token expiration: {e}")
 
-    def _refresh_token(self, request):
+    def _refresh_tokens(self, request):
         """
-        Use the refresh token to get a new access token
+        Refresh the access token using the refresh token
         """
-        # Skip token refresh if using signed_cookies
+        # Skip if using signed_cookies
         if self.using_signed_cookies:
             return
 
+        # Check if we have the necessary data
+        if "ADFS_REFRESH_TOKEN" not in request.session:
+            return
+
         try:
+            from django_auth_adfs.utils import _decrypt_token, _encrypt_token
+
+            # Get the current refresh token
+            refresh_token = _decrypt_token(request.session["ADFS_REFRESH_TOKEN"])
+            if not refresh_token:
+                logger.warning("Failed to decrypt refresh token")
+                return
+
             # Ensure provider config is up to date
             provider_config.load_config()
 
             # Prepare the refresh token request
-            refresh_token = request.session["ADFS_REFRESH_TOKEN"]
             data = {
                 "grant_type": "refresh_token",
                 "client_id": settings.CLIENT_ID,
@@ -269,34 +280,39 @@ class TokenLifecycleMiddleware:
                 data["client_secret"] = settings.CLIENT_SECRET
 
             # Make the request to the token endpoint
-            from django_auth_adfs.backend import AdfsBaseBackend
-
-            backend = AdfsBaseBackend()
-            response = backend._ms_request(
-                provider_config.session.post, provider_config.token_endpoint, data
+            response = provider_config.session.post(
+                provider_config.token_endpoint, data=data, timeout=settings.TIMEOUT
             )
 
             # Process the response
             if response.status_code == 200:
                 token_data = response.json()
 
-                # Update the expiration time
-                if "expires_in" in token_data:
-                    expires_at = datetime.datetime.now() + datetime.timedelta(
-                        seconds=int(token_data["expires_in"])
+                # Store the new tokens in the session
+                request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token(
+                    token_data["access_token"]
+                )
+
+                # Some providers don't return a new refresh token
+                if "refresh_token" in token_data:
+                    request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token(
+                        token_data["refresh_token"]
                     )
-                    request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
+
+                # Calculate and store expiration time
+                expires_in = int(
+                    token_data.get("expires_in", 3600)
+                )  # Default to 1 hour
+                expires_at = datetime.datetime.now() + datetime.timedelta(
+                    seconds=expires_in
+                )
+                request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
 
                 request.session.modified = True
-                logger.debug("Successfully refreshed access token")
+                logger.debug("Successfully refreshed tokens")
 
-                # Update the session with the new tokens
-                request.session["ADFS_ACCESS_TOKEN"] = token_data["access_token"]
-                if "refresh_token" in token_data:
-                    request.session["ADFS_REFRESH_TOKEN"] = token_data["refresh_token"]
-
-                # If OBO token is enabled, refresh it as well
-                if self.store_obo_token and "ADFS_OBO_ACCESS_TOKEN" in request.session:
+                # Also refresh the OBO token if enabled
+                if self.store_obo_token:
                     self._refresh_obo_token(request)
             else:
                 logger.warning(
@@ -304,7 +320,7 @@ class TokenLifecycleMiddleware:
                 )
 
         except Exception as e:
-            logger.exception(f"Error refreshing token: {e}")
+            logger.exception(f"Error refreshing tokens: {e}")
 
     def _refresh_obo_token(self, request):
         """
@@ -323,8 +339,13 @@ class TokenLifecycleMiddleware:
             return
 
         try:
+            from django_auth_adfs.utils import _decrypt_token, _encrypt_token
+
             # Get the current access token
-            access_token = request.session["ADFS_ACCESS_TOKEN"]
+            access_token = _decrypt_token(request.session["ADFS_ACCESS_TOKEN"])
+            if not access_token:
+                logger.warning("Failed to decrypt access token")
+                return
 
             # Use the AdfsBaseBackend to get a new OBO token
             from django_auth_adfs.backend import AdfsBaseBackend
@@ -334,7 +355,7 @@ class TokenLifecycleMiddleware:
 
             if obo_token:
                 # Store the new OBO token in the session
-                request.session["ADFS_OBO_ACCESS_TOKEN"] = obo_token
+                request.session["ADFS_OBO_ACCESS_TOKEN"] = _encrypt_token(obo_token)
 
                 # Calculate and store expiration time (default to 1 hour if not available)
                 # Microsoft Graph tokens typically expire in 1 hour
