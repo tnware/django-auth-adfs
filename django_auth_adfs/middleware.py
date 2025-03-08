@@ -81,9 +81,7 @@ class TokenLifecycleMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
         # Default settings
-        self.threshold = getattr(
-            settings, "TOKEN_REFRESH_THRESHOLD", 300
-        )  # 5 minutes
+        self.threshold = getattr(settings, "TOKEN_REFRESH_THRESHOLD", 300)  # 5 minutes
 
         # Check if using signed_cookies session backend
         self.using_signed_cookies = (
@@ -318,9 +316,19 @@ class TokenLifecycleMiddleware:
                 logger.warning(
                     f"Failed to refresh token: {response.status_code} {response.text}"
                 )
+                if settings.LOGOUT_ON_TOKEN_REFRESH_FAILURE:
+                    from django.contrib.auth import logout
+
+                    logger.info("Logging out user due to token refresh failure")
+                    logout(request)
 
         except Exception as e:
             logger.exception(f"Error refreshing tokens: {e}")
+            if settings.LOGOUT_ON_TOKEN_REFRESH_FAILURE:
+                from django.contrib.auth import logout
+
+                logger.info("Logging out user due to token refresh error")
+                logout(request)
 
     def _refresh_obo_token(self, request):
         """

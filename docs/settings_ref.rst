@@ -567,3 +567,40 @@ handles the conversion to bytes as needed.
    If you change this setting after tokens have been stored in sessions, those tokens will no longer be decryptable.
    This effectively invalidates all existing tokens, requiring users to re-authenticate.
    Consider this when deploying changes to the salt in production environments.
+
+LOGOUT_ON_TOKEN_REFRESH_FAILURE
+-------------------------------
+* **Default**: ``False``
+* **Type**: ``boolean``
+
+Used by the ``TokenLifecycleMiddleware`` to control whether users should be automatically logged out when token refresh fails.
+
+When set to ``True``, if a token refresh attempt fails (either due to an error response from the server or an exception),
+the middleware will automatically log the user out of the Django application.
+
+When set to ``False`` (the default), the middleware will log the error but allow the user to continue using the application
+until their session expires naturally, even though their tokens are no longer valid.
+
+This setting is particularly important for security considerations, as it determines how your application responds when a user's account
+has been disabled in Azure AD/ADFS. When enabled, it can help ensure that users who have had their accounts disabled in the
+identity provider are promptly logged out of your Django application, closing a potential security gap.
+
+This feature is disabled by default to prioritize user experience, but can be enabled for applications where security requirements
+outweigh the potential disruption of unexpected logouts.
+
+.. code-block:: python
+
+    # In your Django settings.py
+    AUTH_ADFS = {
+        # other settings
+        "LOGOUT_ON_TOKEN_REFRESH_FAILURE": True
+    }
+
+.. note::
+   This setting only affects what happens when token refresh fails. It does not affect the initial authentication process
+   or what happens when tokens expire without a refresh attempt.
+
+.. important::
+   Even for applications that don't make additional API calls after authentication, enabling this setting provides
+   an optional security mechanism that can help ensure that access revocation in Azure AD/ADFS is reflected in your
+   Django application.

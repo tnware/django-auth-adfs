@@ -1,10 +1,13 @@
 Token Lifecycle Middleware
 ==========================
 
+The Token Lifecycle Middleware serves two functions in applications using ADFS/Azure AD authentication:
+
+1. **Extended token grant flow**: Enables your application to make delegated API calls to Microsoft services and other resources on behalf of authenticated users
+2. **Enhanced Security**: Can ensure that users whose accounts have been disabled in Azure AD/ADFS are also logged out of your application
+
 Traditionally, django-auth-adfs is used **exclusively** as an authentication solution - it handles user authentication
 via ADFS/Azure AD and maps claims to Django users. It doesn't really care about the access tokens from Azure/ADFS after you've been authenticated.
-This is a useful pattern for many applications, but for those of you who build internal applications for
-your organization, you might want to make delegated requests to Microsoft Graph or other resources on behalf of the user.
 
 The Token Lifecycle Middleware extends django-auth-adfs beyond pure authentication to also handle the complete lifecycle of access tokens
 after the authentication process. This creates a more integrated approach where:
@@ -12,12 +15,13 @@ after the authentication process. This creates a more integrated approach where:
 * The same application registration handles both authentication and resource access
 * Tokens obtained during authentication are managed and refreshed automatically
 * The application can make delegated API calls on behalf of the user
+* The middleware can optionally log out users when token refresh fails
 
 This middleware is particularly useful for applications that need to make delegated requests to Microsoft services on behalf of the user, or otherwise make additional
 requests to the Azure AD/ADFS application after the user has been authenticated.
 
-While not required for basic authentication, it represents an architectural decision and whether you need this functionality depends on your specific requirements
-and your organization's ADFS/Azure AD configuration.
+`While not required for basic authentication, it represents an architectural decision and whether you need this functionality depends on your specific requirements
+and your organization's ADFS/Azure AD configuration.`
 
 How it works
 ------------
@@ -27,8 +31,9 @@ The ``TokenLifecycleMiddleware`` handles the entire token lifecycle:
 1. **Initial Token Capture**: Uses the ``post_authenticate`` signal to capture tokens during authentication
 2. **Token Storage**: Automatically stores tokens in the users session after successful authentication
 3. **Token Refresh**: Checks if the access token is about to expire and refreshes it if needed
-4. **Session Management**: Keeps the session updated with the latest tokens
-5. **OBO Token Management**: Handles On-Behalf-Of tokens for Microsoft Graph API
+4. **Optional Security Enforcement**: Can be configured to log out users when token refresh fails
+5. **Session Management**: Keeps the session updated with the latest tokens
+6. **OBO Token Management**: Handles On-Behalf-Of tokens for Microsoft Graph API access
 
 Read more: https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow#protocol-diagram
 
@@ -40,6 +45,9 @@ Read more: https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-o
     **Currently no community support is guaranteed to be available for this feature**
 
     We recommend thoroughly testing this feature in your specific environment before deploying to production.
+
+    Consider enabling the ``LOGOUT_ON_TOKEN_REFRESH_FAILURE`` setting,
+    which allows you to log out users when token refresh fails.
 
 
 Configuration
@@ -77,6 +85,9 @@ You can configure the token lifecycle behavior with these settings in your Djang
         # Custom salt for token encryption (optional)
         # If not specified, a default salt is used
         "TOKEN_ENCRYPTION_SALT": "your-custom-salt-string",
+
+        # Automatically log out users when token refresh fails (default: False)
+        "LOGOUT_ON_TOKEN_REFRESH_FAILURE": False,
     }
 
 .. warning::
@@ -98,10 +109,21 @@ Considerations
 - You don't need to modify your views or authentication backends to store tokens.
 - Token refresh only works for authenticated users.
 - If the refresh token is invalid or expired, the middleware will not be able to refresh the access token.
-- The middleware will not log the user out if the refresh token is invalid or expired.
+- By default, the middleware will not log the user out if token refresh fails, but this behavior can be changed with the ``LOGOUT_ON_TOKEN_REFRESH_FAILURE`` setting.
 - The middleware will not store tokens in the session when using the ``signed_cookies`` session backend by default.
 - OBO token storage is enabled by default but can be disabled with the ``STORE_OBO_TOKEN`` setting.
 - Using the OBO token versus the regular access token is dependent on the resources you are accessing and the permissions granted to your ADFS/Azure AD application. See `the token types section <#understanding-access-tokens-vs-obo-tokens>`_ for more details.
+
+**Token Refresh Failures**
+
+By default, when token refresh fails, the middleware logs the error but allows the user to continue using the application until their session expires naturally. This behavior can be changed with the ``LOGOUT_ON_TOKEN_REFRESH_FAILURE`` setting:
+
+- When set to ``False`` (default), users remain logged in even if their tokens can't be refreshed
+- When set to ``True``, users are automatically logged out when token refresh fails
+
+When a user's account is disabled in Azure AD/ADFS, their existing Django sessions will remain active by default until they expire naturally. This can create a security gap where revoked users maintain access to your application.
+
+The ``LOGOUT_ON_TOKEN_REFRESH_FAILURE`` setting provides an option to address this concern by allowing you to configure the middleware to automatically log out users when their token refresh fails, which happens when their account has been disabled in the identity provider.
 
 **Existing Sessions**
 
@@ -139,7 +161,6 @@ The Token Lifecycle Middleware automatically encrypts tokens before storing them
 - **Encryption Key**: The key is derived from Django's ``SECRET_KEY`` using PBKDF2
 - **Customizable Salt**: You can customize the encryption salt using the ``TOKEN_ENCRYPTION_SALT`` setting
 - **Transparent Operation**: Encryption and decryption happen automatically when tokens are stored or retrieved
-- **Defense in Depth**: Even if the session storage is compromised, the tokens remain encrypted
 
 The encryption is handled transparently by the middleware and utility functions.
 
@@ -367,16 +388,16 @@ It's important to understand the difference between regular access tokens and OB
 **Delegated Access vs. Application Access**:
     There are two primary ways an application can access resources in Azure AD/ADFS:
 
-    * **Application Access**: The application accesses resources directly with its own identity, not on behalf of a user. This is used for background processes, daemons, or server-to-server scenarios.
+    * **Application Access**: The application accesses resources directly with its own identity, not on behalf of a user.
 
-    * **Delegated Access**: The application accesses resources on behalf of a signed-in user. The permissions are delegated from the user to the application, and the application operates within the constraints of the user's permissions.
+    * **Delegated Access**: The application accesses resources on behalf of a signed-in user.
 
 **Regular Access Token**:
-    The token obtained during authentication with ADFS. This token is typically scoped to your application and can be used to:
-
-    * Access your own application's resources
-    * Access resources that trust your application directly
-    * Exchange for an OBO token to access Microsoft Graph API with delegated permissions
+    The token obtained during authentication with ADFS.
 
 **OBO (On-Behalf-Of) Token**:
-    The OBO flow is specifically designed for delegated access scenarios where your application needs to access resources (like Microsoft Graph) on behalf of the authenticated user. The middleware handles this exchange automatically when OBO token storage is enabled.
+    The OBO flow is specifically designed for delegated access scenarios where your application needs to access resources (like Microsoft Graph) on behalf of the authenticated user.
+
+    The middleware handles this exchange automatically when OBO token storage is enabled.
+
+For more information on the different types of permissions, see `the Microsoft documentation <https://learn.microsoft.com/en-us/entra/identity-platform/permissions-consent-overview>`_.

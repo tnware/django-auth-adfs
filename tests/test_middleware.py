@@ -658,3 +658,93 @@ class TokenLifecycleMiddlewareTests(TestCase):
             mock_settings.TOKEN_ENCRYPTION_SALT = "different-salt"
             # The function catches exceptions and returns None, so check for None
             self.assertIsNone(_decrypt_token(custom_encrypted_token))
+
+    @patch("django_auth_adfs.middleware.provider_config")
+    def test_refresh_token_failure_with_logout(self, mock_provider_config):
+        """Test token refresh failure with LOGOUT_ON_TOKEN_REFRESH_FAILURE enabled"""
+        # Setup
+        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
+        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token(
+            "test_refresh_token"
+        )
+        expires_at = datetime.datetime.now() - datetime.timedelta(minutes=5)
+        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
+
+        # Mock the response from the token endpoint
+        mock_response = Mock()
+        mock_response.status_code = 400
+        mock_response.text = "Invalid refresh token"
+        mock_provider_config.session.post.return_value = mock_response
+
+        # Enable the setting
+        with patch("django_auth_adfs.middleware.settings") as mock_settings:
+            mock_settings.LOGOUT_ON_TOKEN_REFRESH_FAILURE = True
+            mock_settings.CLIENT_ID = "test_client_id"
+            mock_settings.CLIENT_SECRET = "test_client_secret"
+            mock_settings.TIMEOUT = 5
+
+            # Mock the logout function
+            with patch("django.contrib.auth.logout") as mock_logout:
+                self.middleware._refresh_tokens(self.request)
+
+                # Verify logout was called
+                mock_logout.assert_called_once_with(self.request)
+
+    @patch("django_auth_adfs.middleware.provider_config")
+    def test_refresh_token_failure_without_logout(self, mock_provider_config):
+        """Test token refresh failure with LOGOUT_ON_TOKEN_REFRESH_FAILURE disabled"""
+        # Setup
+        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
+        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token(
+            "test_refresh_token"
+        )
+        expires_at = datetime.datetime.now() - datetime.timedelta(minutes=5)
+        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
+
+        # Mock the response from the token endpoint
+        mock_response = Mock()
+        mock_response.status_code = 400
+        mock_response.text = "Invalid refresh token"
+        mock_provider_config.session.post.return_value = mock_response
+
+        # Disable the setting (default)
+        with patch("django_auth_adfs.middleware.settings") as mock_settings:
+            mock_settings.LOGOUT_ON_TOKEN_REFRESH_FAILURE = False
+            mock_settings.CLIENT_ID = "test_client_id"
+            mock_settings.CLIENT_SECRET = "test_client_secret"
+            mock_settings.TIMEOUT = 5
+
+            # Mock the logout function
+            with patch("django.contrib.auth.logout") as mock_logout:
+                self.middleware._refresh_tokens(self.request)
+
+                # Verify logout was not called
+                mock_logout.assert_not_called()
+
+    @patch("django_auth_adfs.middleware.provider_config")
+    def test_refresh_token_exception_with_logout(self, mock_provider_config):
+        """Test token refresh exception with LOGOUT_ON_TOKEN_REFRESH_FAILURE enabled"""
+        # Setup
+        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
+        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token(
+            "test_refresh_token"
+        )
+        expires_at = datetime.datetime.now() - datetime.timedelta(minutes=5)
+        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
+
+        # Make the request raise an exception
+        mock_provider_config.session.post.side_effect = Exception("Connection error")
+
+        # Enable the setting
+        with patch("django_auth_adfs.middleware.settings") as mock_settings:
+            mock_settings.LOGOUT_ON_TOKEN_REFRESH_FAILURE = True
+            mock_settings.CLIENT_ID = "test_client_id"
+            mock_settings.CLIENT_SECRET = "test_client_secret"
+            mock_settings.TIMEOUT = 5
+
+            # Mock the logout function
+            with patch("django.contrib.auth.logout") as mock_logout:
+                self.middleware._refresh_tokens(self.request)
+
+                # Verify logout was called
+                mock_logout.assert_called_once_with(self.request)
