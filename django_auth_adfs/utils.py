@@ -148,7 +148,7 @@ def get_obo_access_token(request):
         return None
 
     # Check if OBO token storage is enabled
-    store_obo_token = getattr(settings, "ADFS_STORE_OBO_TOKEN", True)
+    store_obo_token = getattr(settings, "STORE_OBO_TOKEN", True)
     if not store_obo_token:
         logger.debug("OBO token storage is disabled")
         return None

@@ -76,6 +76,20 @@ class Settings(object):
             request, 'django_auth_adfs/login_failed.html', {'error_message': error_message}, status=status
         )
         self.PROXIES = None
+        self.CUSTOM_FAILED_RESPONSE_VIEW = (
+            lambda request, error_message, status: render(
+                request,
+                "django_auth_adfs/login_failed.html",
+                {"error_message": error_message},
+                status=status,
+            )
+        )
+        self.PROXIES = None
+
+        # Token Lifecycle Middleware settings
+        self.TOKEN_REFRESH_THRESHOLD = 300  # 5 minutes
+        self.STORE_OBO_TOKEN = True
+        self.TOKEN_ENCRYPTION_SALT = b"django_auth_adfs_token_encryption"
 
         self.VERSION = 'v1.0'
         self.SCOPES = []

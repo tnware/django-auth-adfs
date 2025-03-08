@@ -574,8 +574,24 @@ class TokenLifecycleMiddlewareTests(TestCase):
         self.assertFalse(self.request.session.modified)
 
     def test_disabled_obo_token_functionality(self):
-        """Test that OBO token functionality is disabled when ADFS_STORE_OBO_TOKEN is False"""
-        # ... existing code ...
+        """Test that OBO token functionality is disabled when STORE_OBO_TOKEN is False"""
+        # Set up a user with an access token and OBO token
+        self.user.access_token = "test_access_token"
+        self.user.obo_access_token = "test_obo_token"
+
+        # Patch the middleware to disable OBO token storage
+        with patch.object(self.middleware, "store_obo_token", False):
+            # Store tokens from user
+            self.middleware._store_tokens_from_user(self.request)
+
+            # Verify access token is stored but OBO token is not
+            self.assertTrue("ADFS_ACCESS_TOKEN" in self.request.session)
+            self.assertFalse("ADFS_OBO_ACCESS_TOKEN" in self.request.session)
+
+            # Verify get_obo_access_token returns None when disabled
+            with patch("django_auth_adfs.utils.settings") as mock_settings:
+                mock_settings.STORE_OBO_TOKEN = False
+                self.assertIsNone(get_obo_access_token(self.request))
 
     def test_token_encryption(self):
         """Test that tokens are properly encrypted and decrypted"""

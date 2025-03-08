@@ -67,13 +67,13 @@ You can configure the token lifecycle behavior with these settings in your Djang
 
     AUTH_ADFS = {
         # other settings
-        
+
         # Number of seconds before expiration to refresh (default: 300, i.e., 5 minutes)
         "TOKEN_REFRESH_THRESHOLD": 300,
-        
+
         # Enable or disable OBO token storage for Microsoft Graph API (default: True)
         "STORE_OBO_TOKEN": True,
-        
+
         # Custom salt for token encryption (optional)
         # If not specified, a default salt is used
         "TOKEN_ENCRYPTION_SALT": "your-custom-salt-string",
@@ -89,7 +89,7 @@ You can configure the token lifecycle behavior with these settings in your Djang
     By default (``STORE_OBO_TOKEN = True``), the middleware will automatically request and store OBO tokens
     for Microsoft Graph API access. If your application doesn't need to access Microsoft Graph API,
     you can set ``STORE_OBO_TOKEN = False`` to disable this functionality completely.
-    See `here <#disabling-obo-token-functionality>`_ for more details.
+    See `the OBO token configuration section <#disabling-obo-token-functionality>`_ for more details.
 
 Considerations
 --------------
@@ -101,7 +101,7 @@ Considerations
 - The middleware will not log the user out if the refresh token is invalid or expired.
 - The middleware will not store tokens in the session when using the ``signed_cookies`` session backend by default.
 - OBO token storage is enabled by default but can be disabled with the ``STORE_OBO_TOKEN`` setting.
-- Using the OBO token versus the regular access token is dependent on the resources you are accessing and the permissions granted to your ADFS/Azure AD application. See `here <#understanding-access-tokens-vs-obo-tokens>`_ for more details.
+- Using the OBO token versus the regular access token is dependent on the resources you are accessing and the permissions granted to your ADFS/Azure AD application. See `the token types section <#understanding-access-tokens-vs-obo-tokens>`_ for more details.
 
 **Existing Sessions**
 
@@ -166,7 +166,7 @@ If you're using the ``signed_cookies`` session backend and need token storage, y
 
 **Automatic OBO Token Acquisition**
 
-By default, the middleware automatically requests OBO tokens during authentication. If your application doesn't need OBO tokens, you can disable this behavior to reduce unnecessary token requests (see `here <#disabling-obo-token-functionality>`_ for more details).
+By default, the middleware automatically requests OBO tokens during authentication. If your application doesn't need OBO tokens, you can disable this behavior to reduce unnecessary token requests (see `the OBO token configuration section <#disabling-obo-token-functionality>`_ for more details).
 
 Disabling OBO Token Functionality
 ---------------------------------
@@ -189,7 +189,7 @@ When this setting is ``False``:
 
 Note that disabling OBO tokens doesn't affect the regular access token functionality. Your application will still be able to use the access token obtained during authentication for its own resources and APIs that directly trust your application.
 
-See `here <#understanding-access-tokens-vs-obo-tokens>`_ for more details.
+See `the token types section <#understanding-access-tokens-vs-obo-tokens>`_ for more details.
 
 Accessing Tokens in Your Views
 ------------------------------
