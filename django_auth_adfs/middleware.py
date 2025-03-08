@@ -15,12 +15,12 @@ from django_auth_adfs.config import settings, provider_config
 from django_auth_adfs.signals import post_authenticate
 
 LOGIN_EXEMPT_URLS = [
-    compile(django_settings.LOGIN_URL.lstrip("/")),
-    compile(reverse("django_auth_adfs:login").lstrip("/")),
-    compile(reverse("django_auth_adfs:logout").lstrip("/")),
-    compile(reverse("django_auth_adfs:callback").lstrip("/")),
+    compile(django_settings.LOGIN_URL.lstrip('/')),
+    compile(reverse("django_auth_adfs:login").lstrip('/')),
+    compile(reverse("django_auth_adfs:logout").lstrip('/')),
+    compile(reverse("django_auth_adfs:callback").lstrip('/')),
 ]
-if hasattr(settings, "LOGIN_EXEMPT_URLS"):
+if hasattr(settings, 'LOGIN_EXEMPT_URLS'):
     LOGIN_EXEMPT_URLS += [compile(expr) for expr in settings.LOGIN_EXEMPT_URLS]
 
 logger = logging.getLogger("django_auth_adfs")
@@ -36,26 +36,23 @@ class LoginRequiredMiddleware:
     Requires authentication middleware and template context processors to be
     loaded. You'll get an error if they aren't.
     """
-
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        assert hasattr(request, "user"), (
-            "The Login Required middleware requires "
-            "authentication middleware to be installed. "
-            "Edit your MIDDLEWARE setting to insert "
-            "'django.contrib.auth.middleware.AuthenticationMiddleware'. "
-            "If that doesn't work, ensure your TEMPLATE_CONTEXT_PROCESSORS "
-            "setting includes 'django.core.context_processors.auth'."
-        )
+        assert hasattr(request, 'user'), "The Login Required middleware requires " \
+                                         "authentication middleware to be installed. " \
+                                         "Edit your MIDDLEWARE setting to insert " \
+                                         "'django.contrib.auth.middleware.AuthenticationMiddleware'. " \
+                                         "If that doesn't work, ensure your TEMPLATE_CONTEXT_PROCESSORS " \
+                                         "setting includes 'django.core.context_processors.auth'."
         if not request.user.is_authenticated:
-            path = request.path_info.lstrip("/")
+            path = request.path_info.lstrip('/')
             if not any(m.match(path) for m in LOGIN_EXEMPT_URLS):
                 try:
                     return redirect_to_login(request.get_full_path())
                 except MFARequired:
-                    return redirect_to_login("django_auth_adfs:login-force-mfa")
+                    return redirect_to_login('django_auth_adfs:login-force-mfa')
 
         return self.get_response(request)
 
