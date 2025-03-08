@@ -65,26 +65,30 @@ You can configure the token lifecycle behavior with these settings in your Djang
 
 .. code-block:: python
 
-    # Number of seconds before expiration to refresh (default: 300, i.e., 5 minutes)
-    ADFS_TOKEN_REFRESH_THRESHOLD = 300
-
-    # Enable or disable OBO token storage for Microsoft Graph API (default: True)
-    ADFS_STORE_OBO_TOKEN = True
-
-    # Custom salt for token encryption (optional)
-    # If not specified, a default salt is used
-    ADFS_TOKEN_ENCRYPTION_SALT = "your-custom-salt-string"
+    AUTH_ADFS = {
+        # other settings
+        
+        # Number of seconds before expiration to refresh (default: 300, i.e., 5 minutes)
+        "TOKEN_REFRESH_THRESHOLD": 300,
+        
+        # Enable or disable OBO token storage for Microsoft Graph API (default: True)
+        "STORE_OBO_TOKEN": True,
+        
+        # Custom salt for token encryption (optional)
+        # If not specified, a default salt is used
+        "TOKEN_ENCRYPTION_SALT": "your-custom-salt-string",
+    }
 
 .. warning::
-    If you change the ``ADFS_TOKEN_ENCRYPTION_SALT`` after tokens have been stored in sessions, those tokens will no longer be decryptable.
+    If you change the ``TOKEN_ENCRYPTION_SALT`` after tokens have been stored in sessions, those tokens will no longer be decryptable.
     This effectively invalidates all existing tokens, requiring users to re-authenticate.
 
     Consider this when deploying changes to the salt in production environments.
 
 .. note::
-    By default (``ADFS_STORE_OBO_TOKEN = True``), the middleware will automatically request and store OBO tokens
+    By default (``STORE_OBO_TOKEN = True``), the middleware will automatically request and store OBO tokens
     for Microsoft Graph API access. If your application doesn't need to access Microsoft Graph API,
-    you can set ``ADFS_STORE_OBO_TOKEN = False`` to disable this functionality completely.
+    you can set ``STORE_OBO_TOKEN = False`` to disable this functionality completely.
     See `here <#disabling-obo-token-functionality>`_ for more details.
 
 Considerations
@@ -96,7 +100,7 @@ Considerations
 - If the refresh token is invalid or expired, the middleware will not be able to refresh the access token.
 - The middleware will not log the user out if the refresh token is invalid or expired.
 - The middleware will not store tokens in the session when using the ``signed_cookies`` session backend by default.
-- OBO token storage is enabled by default but can be disabled with the ``ADFS_STORE_OBO_TOKEN`` setting.
+- OBO token storage is enabled by default but can be disabled with the ``STORE_OBO_TOKEN`` setting.
 - Using the OBO token versus the regular access token is dependent on the resources you are accessing and the permissions granted to your ADFS/Azure AD application. See `here <#understanding-access-tokens-vs-obo-tokens>`_ for more details.
 
 **Existing Sessions**
@@ -133,7 +137,7 @@ The Token Lifecycle Middleware automatically encrypts tokens before storing them
 - **Always Enabled**: Token encryption is always enabled and cannot be disabled
 - **Encryption Method**: Tokens are encrypted using the Fernet symmetric encryption algorithm
 - **Encryption Key**: The key is derived from Django's ``SECRET_KEY`` using PBKDF2
-- **Customizable Salt**: You can customize the encryption salt using the ``ADFS_TOKEN_ENCRYPTION_SALT`` setting
+- **Customizable Salt**: You can customize the encryption salt using the ``TOKEN_ENCRYPTION_SALT`` setting
 - **Transparent Operation**: Encryption and decryption happen automatically when tokens are stored or retrieved
 - **Defense in Depth**: Even if the session storage is compromised, the tokens remain encrypted
 
@@ -172,7 +176,9 @@ By default, the Token Lifecycle Middleware automatically requests and stores OBO
 .. code-block:: python
 
     # In your Django settings.py
-    ADFS_STORE_OBO_TOKEN = False
+    AUTH_ADFS = {
+        "STORE_OBO_TOKEN": False,
+    }
 
 When this setting is ``False``:
 

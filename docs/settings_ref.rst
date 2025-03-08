@@ -498,7 +498,7 @@ PROXIES
 An optional proxy for all communication with the server. Example: ``{'http': '10.0.0.1', 'https': '10.0.0.2'}``
 See the `requests documentation <https://requests.readthedocs.io/en/v3.0.0/api/#requests.Session.proxies>`__ for more information.
 
-ADFS_TOKEN_REFRESH_THRESHOLD
+TOKEN_REFRESH_THRESHOLD
 ---------------------------
 * **Default**: ``300`` (5 minutes)
 * **Type**: ``integer``
@@ -515,9 +515,12 @@ experience disruptions due to token expiration during active sessions.
 
     # In your Django settings.py
     # Refresh tokens 10 minutes before they expire
-    ADFS_TOKEN_REFRESH_THRESHOLD = 600
+    AUTH_ADFS = {
+        # other settings
+        "TOKEN_REFRESH_THRESHOLD": 600
+    }
 
-ADFS_STORE_OBO_TOKEN
+STORE_OBO_TOKEN
 ------------------
 * **Default**: ``True``
 * **Type**: ``boolean``
@@ -530,7 +533,15 @@ for Microsoft Graph API. Set to ``False`` if you don't need to access Microsoft 
    is always disabled for security reasons. This behavior cannot be overridden. If you need token storage,
    you must use a different session backend like database or cache-based sessions.
 
-ADFS_TOKEN_ENCRYPTION_SALT
+.. code-block:: python
+
+    # In your Django settings.py
+    AUTH_ADFS = {
+        # other settings
+        "STORE_OBO_TOKEN": False
+    }
+
+TOKEN_ENCRYPTION_SALT
 --------------------------
 * **Default**: ``b"django_auth_adfs_token_encryption"``
 * **Type**: ``string``
@@ -543,7 +554,10 @@ You can customize this value to use a different salt for token encryption:
 .. code-block:: python
 
     # In your Django settings.py
-    ADFS_TOKEN_ENCRYPTION_SALT = "your-custom-salt-string"
+    AUTH_ADFS = {
+        # other settings
+        "TOKEN_ENCRYPTION_SALT": "your-custom-salt-string"
+    }
 
 While the default value is defined as a bytes literal (with the ``b`` prefix) in the code,
 you should simply provide a regular string in your settings. The middleware automatically

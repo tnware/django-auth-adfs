@@ -60,8 +60,8 @@ class TokenLifecycleMiddlewareTests(TestCase):
         with patch("django_auth_adfs.middleware.getattr") as mock_getattr:
             # Mock getattr to return custom values
             mock_getattr.side_effect = lambda obj, name, default: {
-                "ADFS_TOKEN_REFRESH_THRESHOLD": 600,
-                "ADFS_STORE_OBO_TOKEN": False,
+                "TOKEN_REFRESH_THRESHOLD": 600,
+                "STORE_OBO_TOKEN": False,
             }.get(name, default)
 
             middleware = TokenLifecycleMiddleware(lambda r: r)
@@ -615,7 +615,7 @@ class TokenLifecycleMiddlewareTests(TestCase):
         retrieved_obo_token = get_obo_access_token(self.request)
         self.assertEqual(original_obo_token, retrieved_obo_token)
 
-    @override_settings(ADFS_TOKEN_ENCRYPTION_SALT="custom-salt-for-testing")
+    @override_settings(TOKEN_ENCRYPTION_SALT="custom-salt-for-testing")
     def test_custom_encryption_salt(self):
         """Test that custom encryption salt changes the encrypted token value"""
         # First, encrypt a token with the default salt
@@ -624,7 +624,7 @@ class TokenLifecycleMiddlewareTests(TestCase):
 
         # Now, encrypt the same token with a custom salt (set via override_settings)
         with patch("django_auth_adfs.utils.settings") as mock_settings:
-            mock_settings.ADFS_TOKEN_ENCRYPTION_SALT = "custom-salt-for-testing"
+            mock_settings.TOKEN_ENCRYPTION_SALT = "custom-salt-for-testing"
             custom_encrypted_token = _encrypt_token(original_token)
 
         # The encrypted tokens should be different due to different salts
@@ -632,13 +632,13 @@ class TokenLifecycleMiddlewareTests(TestCase):
 
         # But both should decrypt to the original token when using the correct salt
         with patch("django_auth_adfs.utils.settings") as mock_settings:
-            mock_settings.ADFS_TOKEN_ENCRYPTION_SALT = "custom-salt-for-testing"
+            mock_settings.TOKEN_ENCRYPTION_SALT = "custom-salt-for-testing"
             decrypted_token = _decrypt_token(custom_encrypted_token)
 
         self.assertEqual(original_token, decrypted_token)
 
         # A token encrypted with one salt should not be decryptable with another
         with patch("django_auth_adfs.utils.settings") as mock_settings:
-            mock_settings.ADFS_TOKEN_ENCRYPTION_SALT = "different-salt"
+            mock_settings.TOKEN_ENCRYPTION_SALT = "different-salt"
             # The function catches exceptions and returns None, so check for None
             self.assertIsNone(_decrypt_token(custom_encrypted_token))

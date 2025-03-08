@@ -74,15 +74,15 @@ class TokenLifecycleMiddleware:
 
     You can configure the token refresh behavior with these settings:
 
-    ADFS_TOKEN_REFRESH_THRESHOLD: Number of seconds before expiration to refresh (default: 300)
-    ADFS_STORE_OBO_TOKEN: Boolean to enable/disable OBO token storage (default: True)
+    TOKEN_REFRESH_THRESHOLD: Number of seconds before expiration to refresh (default: 300)
+    STORE_OBO_TOKEN: Boolean to enable/disable OBO token storage (default: True)
     """
 
     def __init__(self, get_response):
         self.get_response = get_response
         # Default settings
         self.threshold = getattr(
-            settings, "ADFS_TOKEN_REFRESH_THRESHOLD", 300
+            settings, "TOKEN_REFRESH_THRESHOLD", 300
         )  # 5 minutes
 
         # Check if using signed_cookies session backend
@@ -95,7 +95,7 @@ class TokenLifecycleMiddleware:
         self.disable_for_signed_cookies = True
 
         # Option to enable/disable OBO token storage
-        self.store_obo_token = getattr(settings, "ADFS_STORE_OBO_TOKEN", True)
+        self.store_obo_token = getattr(settings, "STORE_OBO_TOKEN", True)
 
         if self.using_signed_cookies:
             logger.warning(
