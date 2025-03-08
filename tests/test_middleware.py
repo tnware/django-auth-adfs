@@ -3,14 +3,21 @@ from unittest.mock import Mock, patch
 import time
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, RequestFactory
+from django.test import TestCase, RequestFactory, override_settings
 from django.contrib.sessions.backends.db import SessionStore
 
 from django_auth_adfs.middleware import TokenLifecycleMiddleware
 from django_auth_adfs.config import settings
+from tests.settings import MIDDLEWARE
 
 User = get_user_model()
 
+# Add TokenLifecycleMiddleware to the existing middleware
+MIDDLEWARE_WITH_TOKEN_LIFECYCLE = MIDDLEWARE + (
+    'django_auth_adfs.middleware.TokenLifecycleMiddleware',
+)
+
+@override_settings(MIDDLEWARE=MIDDLEWARE_WITH_TOKEN_LIFECYCLE)
 class TokenLifecycleMiddlewareTests(TestCase):
     """
     Tests for the TokenLifecycleMiddleware.

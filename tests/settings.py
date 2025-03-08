@@ -36,7 +36,6 @@ MIDDLEWARE = (
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 
     'django_auth_adfs.middleware.LoginRequiredMiddleware',
-    'django_auth_adfs.middleware.TokenLifecycleMiddleware',
 )
 
 INSTALLED_APPS = (
