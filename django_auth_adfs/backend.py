@@ -415,7 +415,7 @@ class AdfsAuthCodeBackend(AdfsBaseBackend):
     Microsoft ADFS server with an authorization code.
     """
 
-    def authenticate(self, request=None, username=None, password=None, authorization_code=None, **kwargs):
+    def authenticate(self, request=None, authorization_code=None, **kwargs):
         # If there's no token or code, we pass control to the next authentication backend
         if authorization_code is None or authorization_code == '':
             logger.debug("Authentication backend was called but no authorization code was received")
@@ -436,7 +436,7 @@ class AdfsAccessTokenBackend(AdfsBaseBackend):
     Microsoft ADFS server with an access token retrieved by the client.
     """
 
-    def authenticate(self, request=None, username=None, password=None, access_token=None, **kwargs):
+    def authenticate(self, request=None, access_token=None, **kwargs):
         # If loaded data is too old, reload it again
         provider_config.load_config()
 
