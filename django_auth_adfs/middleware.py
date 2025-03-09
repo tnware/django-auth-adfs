@@ -203,12 +203,14 @@ class TokenLifecycleMiddleware:
                 if self.logout_on_token_refresh_failure:
                     logger.info("Logging out user due to token refresh failure")
                     logout(request)
+                return False
 
         except Exception as e:
             logger.exception(f"Error refreshing tokens: {e}")
             if self.logout_on_token_refresh_failure:
                 logger.info("Logging out user due to token refresh error")
                 logout(request)
+            return False
 
     def _refresh_obo_token(self, request):
         """
