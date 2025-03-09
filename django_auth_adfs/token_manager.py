@@ -61,11 +61,9 @@ class TokenManager:
     
     def is_middleware_enabled(self):
         """Check if the TokenLifecycleMiddleware is enabled."""
+        EXPECTED_MIDDLEWARE = 'django_auth_adfs.middleware.TokenLifecycleMiddleware'
         try:
-            for middleware in django_settings.MIDDLEWARE:
-                if middleware.endswith('TokenLifecycleMiddleware'):
-                    return True
-            return False
+            return EXPECTED_MIDDLEWARE in django_settings.MIDDLEWARE
         except Exception as e:
             logger.warning(f"Error checking if middleware is enabled: {e}")
             return False

@@ -178,3 +178,100 @@ class TokenLifecycleTests(TestCase):
         with patch.object(token_manager, "check_token_expiration") as mock_check:
             self.middleware(self.request)
             mock_check.assert_called_once_with(self.request)
+
+    def test_middleware_detection(self):
+        """Test middleware enabled detection"""
+        # Test with correct middleware path
+        with patch('django.conf.settings.MIDDLEWARE', [
+            'django.contrib.sessions.middleware.SessionMiddleware',
+            'django_auth_adfs.middleware.TokenLifecycleMiddleware'
+        ]):
+            self.assertTrue(token_manager.is_middleware_enabled())
+
+        # Test with incorrect middleware path
+        with patch('django.conf.settings.MIDDLEWARE', [
+            'django.contrib.sessions.middleware.SessionMiddleware',
+            'some_other_package.TokenLifecycleMiddleware',  # Wrong package
+            'django_auth_adfs.middleware.SomeOtherMiddleware',  # Wrong middleware
+            'django_auth_adfs.TokenLifecycleMiddleware',  # Wrong path
+        ]):
+            self.assertFalse(token_manager.is_middleware_enabled())
+
+    def test_clear_tokens(self):
+        """Test clearing tokens from session"""
+        # Store some tokens first
+        token_manager.store_tokens(
+            self.request,
+            "test_access",
+            {
+                "access_token": "test_access",
+                "refresh_token": "test_refresh",
+                "expires_in": 3600
+            }
+        )
+
+        # Verify tokens were stored
+        self.assertTrue(token_manager.ACCESS_TOKEN_KEY in self.request.session)
+        self.assertTrue(token_manager.REFRESH_TOKEN_KEY in self.request.session)
+
+        # Clear tokens
+        success = token_manager.clear_tokens(self.request)
+        self.assertTrue(success)
+
+        # Verify tokens were cleared
+        self.assertFalse(token_manager.ACCESS_TOKEN_KEY in self.request.session)
+        self.assertFalse(token_manager.REFRESH_TOKEN_KEY in self.request.session)
+        self.assertFalse(token_manager.TOKEN_EXPIRES_AT_KEY in self.request.session)
+        self.assertFalse(token_manager.OBO_ACCESS_TOKEN_KEY in self.request.session)
+        self.assertFalse(token_manager.OBO_TOKEN_EXPIRES_AT_KEY in self.request.session)
+
+    def test_refresh_obo_token_directly(self):
+        """Test direct OBO token refresh"""
+        # Store access token first
+        token_manager.store_tokens(
+            self.request,
+            "test_access",
+            {"access_token": "test_access", "expires_in": 3600}
+        )
+
+        # Mock OBO token acquisition and provider config
+        with patch("django_auth_adfs.backend.AdfsBaseBackend") as mock_backend, \
+             patch("django_auth_adfs.token_manager.provider_config") as mock_provider:
+            
+            mock_backend.return_value.get_obo_access_token.return_value = "new_obo_token"
+            mock_provider.load_config.return_value = None
+            mock_provider.token_endpoint = "https://example.com/token"
+            mock_provider.session.verify = False  # Disable cert validation
+            
+            # Refresh OBO token
+            success = token_manager.refresh_obo_token(self.request)
+            self.assertTrue(success)
+
+            # Verify new OBO token was stored
+            obo_token = token_manager.get_obo_access_token(self.request)
+            self.assertEqual(obo_token, "new_obo_token")
+            self.assertTrue(token_manager.OBO_TOKEN_EXPIRES_AT_KEY in self.request.session)
+
+    def test_should_store_tokens_edge_cases(self):
+        """Test edge cases for token storage decisions"""
+        # Test with no request
+        self.assertFalse(token_manager.should_store_tokens(None))
+
+        # Test with request but no session
+        request_without_session = self.factory.get("/")
+        # Instead of deleting session attribute that doesn't exist,
+        # we'll create a Mock object with no session attribute
+        from unittest.mock import Mock
+        request_without_session = Mock(spec=[])  # Empty spec means no attributes
+        self.assertFalse(token_manager.should_store_tokens(request_without_session))
+
+        # Test with signed cookies
+        token_manager.using_signed_cookies = True
+        try:
+            self.assertFalse(token_manager.should_store_tokens(self.request))
+        finally:
+            token_manager.using_signed_cookies = False
+
+        # Test with middleware disabled
+        with patch.object(token_manager, "is_middleware_enabled", return_value=False):
+            self.assertFalse(token_manager.should_store_tokens(self.request))
