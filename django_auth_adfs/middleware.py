@@ -313,6 +313,9 @@ class TokenLifecycleMiddleware:
             return
 
         try:
+
+            provider_config.load_config()
+
             from django_auth_adfs.utils import _decrypt_token, _encrypt_token
 
             access_token = _decrypt_token(request.session["ADFS_ACCESS_TOKEN"])
