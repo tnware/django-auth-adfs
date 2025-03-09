@@ -11,6 +11,7 @@ from django.core.exceptions import (ImproperlyConfigured, ObjectDoesNotExist,
 from django_auth_adfs import signals
 from django_auth_adfs.config import provider_config, settings
 from django_auth_adfs.exceptions import MFARequired
+from django_auth_adfs.token_manager import token_manager
 
 logger = logging.getLogger("django_auth_adfs")
 
@@ -191,76 +192,13 @@ class AdfsBaseBackend(ModelBackend):
         2. The TokenLifecycleMiddleware is enabled
         3. We're not using signed cookies
         """
-        if not request or not hasattr(request, "session"):
-            return False
-            
-        try:
-            from django.conf import settings as django_settings
-            
-            # Check if TokenLifecycleMiddleware is enabled
-            for middleware in django_settings.MIDDLEWARE:
-                if middleware.endswith('TokenLifecycleMiddleware'):
-                    # Don't store tokens in signed cookies
-                    if django_settings.SESSION_ENGINE != "django.contrib.sessions.backends.signed_cookies":
-                        return True
-        except Exception as e:
-            logger.warning(f"Error checking if tokens should be stored: {e}")
-            
-        return False
+        return token_manager.should_store_tokens(request)
         
     def _store_tokens_in_session(self, request, access_token, adfs_response=None):
         """
         Store tokens in the session.
         """
-        if not self._should_store_tokens(request):
-            return
-            
-        try:
-            from django_auth_adfs.utils import _encrypt_token
-            session_modified = False
-            
-            # Store access token
-            encrypted_token = _encrypt_token(access_token)
-            if encrypted_token:
-                request.session["ADFS_ACCESS_TOKEN"] = encrypted_token
-                session_modified = True
-            
-            # Store refresh token
-            if adfs_response and "refresh_token" in adfs_response:
-                refresh_token = adfs_response["refresh_token"]
-                encrypted_token = _encrypt_token(refresh_token)
-                if encrypted_token:
-                    request.session["ADFS_REFRESH_TOKEN"] = encrypted_token
-                    session_modified = True
-            
-            # Store token expiration
-            if adfs_response and "expires_in" in adfs_response:
-                expires_at = datetime.datetime.now() + datetime.timedelta(
-                    seconds=int(adfs_response["expires_in"])
-                )
-                request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-                session_modified = True
-            
-            # Store OBO token if enabled
-            store_obo_token = getattr(settings, "STORE_OBO_TOKEN", True)
-            if store_obo_token:
-                try:
-                    obo_token = self.get_obo_access_token(access_token)
-                    if obo_token:
-                        encrypted_token = _encrypt_token(obo_token)
-                        if encrypted_token:
-                            request.session["ADFS_OBO_ACCESS_TOKEN"] = encrypted_token
-                            obo_expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
-                            request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = obo_expires_at.isoformat()
-                            session_modified = True
-                except Exception as e:
-                    logger.warning(f"Error getting OBO token: {e}")
-            
-            if session_modified:
-                request.session.modified = True
-                logger.debug("Stored tokens in session during authentication")
-        except Exception as e:
-            logger.warning(f"Error storing tokens in session: {e}")
+        token_manager.store_tokens(request, access_token, adfs_response)
 
     def process_access_token(self, access_token, adfs_response=None, request=None):
         if not access_token:

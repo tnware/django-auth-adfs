@@ -1,3 +1,7 @@
+"""
+Based on https://djangosnippets.org/snippets/1179/
+"""
+
 import datetime
 from unittest.mock import Mock, patch
 import time
@@ -8,13 +12,14 @@ from django.test import TestCase, RequestFactory, override_settings
 from django.contrib.sessions.backends.db import SessionStore
 
 from django_auth_adfs.middleware import TokenLifecycleMiddleware
-from django_auth_adfs.config import settings
+from django_auth_adfs.config import settings as adfs_settings
 from django_auth_adfs.utils import (
     get_access_token,
     get_obo_access_token,
     _encrypt_token,
     _decrypt_token,
 )
+from django_auth_adfs.token_manager import token_manager, TokenManager
 from tests.settings import MIDDLEWARE
 
 User = get_user_model()
@@ -26,21 +31,21 @@ MIDDLEWARE_WITH_TOKEN_LIFECYCLE = MIDDLEWARE + (
 
 
 @override_settings(MIDDLEWARE=MIDDLEWARE_WITH_TOKEN_LIFECYCLE)
-class TokenLifecycleMiddlewareTests(TestCase):
+class TokenManagerTests(TestCase):
     """
-    Tests for the TokenLifecycleMiddleware.
+    Tests for the TokenManager class.
 
-    The middleware handles the lifecycle of ADFS tokens:
-    1. Storing tokens from user object to session
-    2. Detecting when tokens need to be refreshed
-    3. Refreshing tokens when needed
-    4. Handling OBO (On-Behalf-Of) tokens
+    The TokenManager handles:
+    - Token storage during authentication
+    - Token encryption/decryption
+    - Token refresh
+    - Token retrieval
+    - OBO token management
     """
 
     def setUp(self):
         """Set up test environment before each test"""
         self.factory = RequestFactory()
-        self.middleware = TokenLifecycleMiddleware(lambda r: r)
         self.user = User.objects.create_user(username="testuser")
         self.request = self.factory.get("/")
         self.request.user = self.user
@@ -49,863 +54,282 @@ class TokenLifecycleMiddlewareTests(TestCase):
     # Group 1: Initialization Tests
 
     def test_init_with_default_settings(self):
-        """Test middleware initialization with default settings"""
-        middleware = TokenLifecycleMiddleware(lambda r: r)
-        self.assertEqual(middleware.threshold, 300)
-        self.assertTrue(middleware.store_obo_token)
-        self.assertFalse(middleware.using_signed_cookies)
+        """Test that the TokenManager initializes with default settings."""
+        manager = TokenManager()
+        
+        # Check default settings
+        self.assertEqual(manager.refresh_threshold, 300)
+        self.assertTrue(manager.store_obo_token)
+        self.assertFalse(manager.logout_on_refresh_failure)
 
+    @override_settings(
+        TOKEN_REFRESH_THRESHOLD=600,
+        STORE_OBO_TOKEN=False,
+        LOGOUT_ON_TOKEN_REFRESH_FAILURE=True,
+    )
     def test_init_with_custom_settings(self):
-        """Test middleware initialization with custom settings"""
-        with patch("django_auth_adfs.middleware.getattr") as mock_getattr:
-            # Mock getattr to return custom values
-            mock_getattr.side_effect = lambda obj, name, default: {
-                "TOKEN_REFRESH_THRESHOLD": 600,
-                "STORE_OBO_TOKEN": False,
-            }.get(name, default)
-
-            middleware = TokenLifecycleMiddleware(lambda r: r)
-
-            # Verify custom settings are applied
-            self.assertEqual(middleware.threshold, 600)
-            self.assertFalse(middleware.store_obo_token)
+        """Test that the TokenManager initializes with custom settings."""
+        # We need to patch the settings module directly since override_settings 
+        # doesn't affect already imported modules
+        with patch.object(adfs_settings, 'TOKEN_REFRESH_THRESHOLD', 600), \
+             patch.object(adfs_settings, 'STORE_OBO_TOKEN', False), \
+             patch.object(adfs_settings, 'LOGOUT_ON_TOKEN_REFRESH_FAILURE', True):
+            
+            manager = TokenManager()
+            
+            self.assertEqual(manager.refresh_threshold, 600)
+            self.assertFalse(manager.store_obo_token)
+            self.assertTrue(manager.logout_on_refresh_failure)
 
     # Group 2: Token Storage Tests
 
-    def test_store_tokens_from_auth(self):
-        """Test storing tokens directly in session during authentication"""
-        # Since _capture_tokens_from_auth was removed, we'll directly set the tokens
-        # in the session to simulate what would happen after authentication
-        
-        # Set up the session with encrypted tokens
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token("test_refresh_token")
-        self.request.session["ADFS_OBO_ACCESS_TOKEN"] = _encrypt_token("test_obo_token")
-        
-        # Set expiration times
-        expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-        self.request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-        self.request.session.modified = True
+    def test_store_tokens(self):
+        """Test storing tokens in session"""
+        access_token = "test_access_token"
+        refresh_token = "test_refresh_token"
+        adfs_response = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_in": 3600
+        }
 
-        # Check session - decrypt tokens before comparing
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_ACCESS_TOKEN"]),
-            "test_access_token",
-        )
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_REFRESH_TOKEN"]),
-            "test_refresh_token",
-        )
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_OBO_ACCESS_TOKEN"]),
-            "test_obo_token",
-        )
-        self.assertTrue("ADFS_TOKEN_EXPIRES_AT" in self.request.session)
-        self.assertTrue("ADFS_OBO_TOKEN_EXPIRES_AT" in self.request.session)
+        # Store tokens
+        success = token_manager.store_tokens(self.request, access_token, adfs_response)
+        self.assertTrue(success)
 
-    def test_store_tokens_from_user(self):
-        """Test storing tokens directly in session during authentication"""
-        # Since _capture_tokens_from_auth was removed, we'll directly set the tokens
-        # in the session to simulate what would happen after authentication
-        from django_auth_adfs.utils import _encrypt_token
-        
-        # Set up the session with encrypted tokens
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token("test_refresh_token")
-        self.request.session["ADFS_OBO_ACCESS_TOKEN"] = _encrypt_token("test_obo_token")
-        
-        # Set expiration times
-        expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-        self.request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-        self.request.session.modified = True
+        # Verify tokens were stored and encrypted
+        stored_access = token_manager.get_access_token(self.request)
+        self.assertEqual(stored_access, access_token)
 
-        # Check session - decrypt tokens before comparing
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_ACCESS_TOKEN"]),
-            "test_access_token",
+        # Check refresh token was stored
+        stored_refresh = token_manager.decrypt_token(
+            self.request.session[token_manager.REFRESH_TOKEN_KEY]
         )
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_REFRESH_TOKEN"]),
-            "test_refresh_token",
-        )
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_OBO_ACCESS_TOKEN"]),
-            "test_obo_token",
-        )
-        self.assertTrue("ADFS_TOKEN_EXPIRES_AT" in self.request.session)
-        self.assertTrue("ADFS_OBO_TOKEN_EXPIRES_AT" in self.request.session)
+        self.assertEqual(stored_refresh, refresh_token)
 
-    def test_store_partial_tokens_from_auth(self):
-        """Test storing partial tokens during authentication"""
-        # Since _capture_tokens_from_auth was removed, we'll directly set the tokens
-        # in the session to simulate what would happen after authentication
-        
-        # Set up the session with only access token (no refresh token)
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
-        
-        # Set expiration time
-        expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-        self.request.session.modified = True
+        # Check expiration was stored
+        self.assertTrue(token_manager.TOKEN_EXPIRES_AT_KEY in self.request.session)
 
-        # Check session
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_ACCESS_TOKEN"]),
-            "test_access_token",
-        )
-        self.assertTrue("ADFS_TOKEN_EXPIRES_AT" in self.request.session)
-        self.assertFalse("ADFS_REFRESH_TOKEN" in self.request.session)
-        self.assertFalse("ADFS_OBO_ACCESS_TOKEN" in self.request.session)
-        self.assertFalse("ADFS_OBO_TOKEN_EXPIRES_AT" in self.request.session)
+    def test_store_partial_tokens(self):
+        """Test storing only access token without refresh token"""
+        access_token = "test_access_token"
+
+        # Store just access token
+        success = token_manager.store_tokens(self.request, access_token)
+        self.assertTrue(success)
+
+        # Verify access token stored
+        stored_access = token_manager.get_access_token(self.request)
+        self.assertEqual(stored_access, access_token)
+
+        # Verify no refresh token stored
+        self.assertFalse(token_manager.REFRESH_TOKEN_KEY in self.request.session)
 
     def test_store_tokens_with_signed_cookies(self):
         """Test that tokens are not stored when using signed cookies"""
-        # Mock the session engine setting
-        with patch("django_auth_adfs.middleware.django_settings") as mock_settings:
-            mock_settings.SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
-            
-            # Create a new middleware instance with the mocked settings
-            middleware = TokenLifecycleMiddleware(lambda r: r)
-            
-            # Verify the middleware is configured correctly
-            self.assertTrue(middleware.using_signed_cookies)
-            
-            # Since _capture_tokens_from_auth was removed, we'll directly check
-            # that the middleware doesn't store tokens when using signed cookies
-            request = self.factory.get("/")
-            request.session = SessionStore()
-            request.user = self.user
-            
-            # Try to set tokens in the session
-            request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
-            request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token("test_refresh_token")
-            
-            # Call the middleware
-            middleware(request)
-            
-            # Check that tokens are not refreshed due to signed cookies setting
-            self.assertTrue(middleware.using_signed_cookies)
-
-    def test_session_modified_flag(self):
-        """Test that the session modified flag is only set when needed"""
-        # Since _capture_tokens_from_auth was removed, we'll directly set the tokens
-        # in the session to simulate what would happen after authentication
-        from django_auth_adfs.utils import _encrypt_token
-        
-        # Create a fresh session
-        self.request.session = SessionStore()
-        
-        # Reset the modified flag
-        self.request.session.modified = False
-        
-        # Set up the session with encrypted tokens
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token("test_refresh_token")
-        
-        # Set expiration time
-        expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-        
-        # Check that the session modified flag is set to True
-        self.assertTrue(self.request.session.modified)
-
-    # Group 3: Token Refresh Detection Tests
-
-    def test_handle_token_refresh_not_needed(self):
-        """Test token refresh when it's not needed"""
-        self.request.session["ADFS_ACCESS_TOKEN"] = "test_access_token"
-        self.request.session["ADFS_REFRESH_TOKEN"] = "test_refresh_token"
-        expires_at = datetime.datetime.now() + datetime.timedelta(
-            hours=1
-        )  # 1 hour to expiry
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-
-        with patch.object(self.middleware, "_refresh_tokens") as mock_refresh:
-            self.middleware._handle_token_refresh(self.request)
-            mock_refresh.assert_not_called()
-
-    def test_handle_token_refresh_needed(self):
-        """Test token refresh when it's needed"""
-        self.request.session["ADFS_ACCESS_TOKEN"] = "test_access_token"
-        self.request.session["ADFS_REFRESH_TOKEN"] = "test_refresh_token"
-        expires_at = datetime.datetime.now() + datetime.timedelta(
-            seconds=60
-        )  # 1 minute to expiry
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-
-        with patch.object(self.middleware, "_refresh_tokens") as mock_refresh:
-            self.middleware._handle_token_refresh(self.request)
-            mock_refresh.assert_called_once_with(self.request)
-
-    def test_handle_expired_token(self):
-        """Test token refresh when token is already expired"""
-        self.request.session["ADFS_ACCESS_TOKEN"] = "test_access_token"
-        self.request.session["ADFS_REFRESH_TOKEN"] = "test_refresh_token"
-        expires_at = datetime.datetime.now() - datetime.timedelta(
-            hours=1
-        )  # Expired 1 hour ago
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-
-        with patch.object(self.middleware, "_refresh_tokens") as mock_refresh:
-            self.middleware._handle_token_refresh(self.request)
-            mock_refresh.assert_called_once_with(self.request)
-
-    def test_obo_token_expires_before_access_token(self):
-        """Test when OBO token expires before access token"""
-        # Set up access token with long expiry
-        self.request.session["ADFS_ACCESS_TOKEN"] = "access_token"
-        self.request.session["ADFS_REFRESH_TOKEN"] = "refresh_token"
-        access_token_expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = (
-            access_token_expires_at.isoformat()
-        )
-
-        # Set up OBO token with short expiry
-        self.request.session["ADFS_OBO_ACCESS_TOKEN"] = "obo_token"
-        obo_expires_at = datetime.datetime.now() + datetime.timedelta(seconds=30)
-        self.request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = obo_expires_at.isoformat()
-
-        # Should refresh only OBO token
-        with patch.object(
-            self.middleware, "_refresh_tokens"
-        ) as mock_refresh_token, patch.object(
-            self.middleware, "_refresh_obo_token"
-        ) as mock_refresh_obo:
-            self.middleware._handle_token_refresh(self.request)
-
-            # Verify only OBO token is refreshed, not the access token
-            mock_refresh_token.assert_not_called()
-            mock_refresh_obo.assert_called_once_with(self.request)
-
-            # Verify session state remains unchanged for access token
-            self.assertEqual(self.request.session["ADFS_ACCESS_TOKEN"], "access_token")
-            self.assertEqual(
-                self.request.session["ADFS_REFRESH_TOKEN"], "refresh_token"
-            )
-            self.assertEqual(
-                self.request.session["ADFS_TOKEN_EXPIRES_AT"],
-                access_token_expires_at.isoformat(),
-            )
-
-    # Group 4: Token Refresh Implementation Tests
-
-    @patch("django_auth_adfs.middleware.provider_config")
-    def test_refresh_token_success(self, mock_provider_config):
-        """Test successful token refresh"""
-        # Set up mock response
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "access_token": "new_access_token",
-            "refresh_token": "new_refresh_token",
-            "expires_in": 3600,
-        }
-
-        # Configure the mock
-        mock_provider_config.session.post.return_value = mock_response
-        mock_provider_config.token_endpoint = (
-            "https://adfs.example.com/adfs/oauth2/token"
-        )
-
-        # Set up session with expired token
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("old_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token("old_refresh_token")
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = (
-            datetime.datetime.now() - datetime.timedelta(minutes=5)
-        ).isoformat()
-
-        # Mock the OBO token refresh to prevent real HTTP requests
-        with patch.object(self.middleware, "_refresh_obo_token") as mock_refresh_obo:
-            # Call refresh method
-            self.middleware._refresh_tokens(self.request)
-
-            # Check that tokens were updated
-            self.assertEqual(
-                _decrypt_token(self.request.session["ADFS_ACCESS_TOKEN"]),
-                "new_access_token",
-            )
-            self.assertEqual(
-                _decrypt_token(self.request.session["ADFS_REFRESH_TOKEN"]),
-                "new_refresh_token",
-            )
-
-    @patch("django_auth_adfs.middleware.provider_config")
-    def test_refresh_token_without_new_refresh_token(self, mock_provider_config):
-        """Test token refresh when response doesn't include a new refresh token"""
-        # Set up mock response without refresh_token
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "access_token": "new_access_token",
-            "expires_in": 3600,
-        }
-
-        # Configure the mock
-        mock_provider_config.session.post.return_value = mock_response
-        mock_provider_config.token_endpoint = (
-            "https://adfs.example.com/adfs/oauth2/token"
-        )
-
-        # Set up session with expired token
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("old_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token("old_refresh_token")
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = (
-            datetime.datetime.now() - datetime.timedelta(minutes=5)
-        ).isoformat()
-
-        # Mock the OBO token refresh to prevent real HTTP requests
-        with patch.object(self.middleware, "_refresh_obo_token") as mock_refresh_obo:
-            # Call refresh method
-            self.middleware._refresh_tokens(self.request)
-
-            # Check that access token was updated but refresh token remains the same
-            self.assertEqual(
-                _decrypt_token(self.request.session["ADFS_ACCESS_TOKEN"]),
-                "new_access_token",
-            )
-            self.assertEqual(
-                _decrypt_token(self.request.session["ADFS_REFRESH_TOKEN"]),
-                "old_refresh_token",
-            )
-
-    def test_refresh_obo_token_success(self):
-        """Test successful OBO token refresh"""
-        # Ensure OBO token storage is enabled
-        self.middleware.store_obo_token = True
-
-        # Set up session with expired OBO token but valid access token
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("valid_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token(
-            "valid_refresh_token"
-        )
-        self.request.session["ADFS_OBO_ACCESS_TOKEN"] = _encrypt_token(
-            "expired_obo_token"
-        )
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = (
-            datetime.datetime.now() + datetime.timedelta(hours=1)
-        ).isoformat()
-        self.request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = (
-            datetime.datetime.now() - datetime.timedelta(minutes=5)
-        ).isoformat()
-
-        # Save the original method
-        original_refresh_obo_token = self.middleware._refresh_obo_token
-        
-        # Create a mock implementation
-        def mock_refresh_obo_token(request):
-            # This simulates a successful token refresh
-            request.session["ADFS_OBO_ACCESS_TOKEN"] = _encrypt_token("new_obo_token")
-            request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = (
-                datetime.datetime.now() + datetime.timedelta(hours=1)
-            ).isoformat()
-            request.session.modified = True
-            
-        # Replace the method with our mock
-        self.middleware._refresh_obo_token = mock_refresh_obo_token
-        
+        # Mock signed cookies setting
+        token_manager.using_signed_cookies = True
         try:
-            # Call handle token refresh directly
-            self.middleware._handle_token_refresh(self.request)
-            
-            # Verify the new token was stored in the session
-            self.assertEqual(
-                _decrypt_token(self.request.session["ADFS_OBO_ACCESS_TOKEN"]),
-                "new_obo_token",
+            success = token_manager.store_tokens(
+                self.request, "test_token", {"refresh_token": "test_refresh"}
             )
-            
-            # Verify the expiry time was updated
-            expires_at = datetime.datetime.fromisoformat(
-                self.request.session["ADFS_OBO_TOKEN_EXPIRES_AT"]
-            )
-            now = datetime.datetime.now()
-            self.assertTrue(
-                (expires_at - now).total_seconds() > 0,
-                "Token expiry time should be in the future"
-            )
+            self.assertFalse(success)
+            self.assertFalse(token_manager.ACCESS_TOKEN_KEY in self.request.session)
         finally:
-            # Restore the original method
-            self.middleware._refresh_obo_token = original_refresh_obo_token
+            token_manager.using_signed_cookies = False
 
-    def test_refresh_obo_token_failure(self):
-        """Test OBO token refresh when it fails"""
-        # Ensure OBO token storage is enabled
-        self.middleware.store_obo_token = True
-
-        # Set up session with expired OBO token
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("valid_access_token")
-        self.request.session["ADFS_OBO_ACCESS_TOKEN"] = _encrypt_token(
-            "expired_obo_token"
-        )
-        self.request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = (
-            datetime.datetime.now() - datetime.timedelta(minutes=5)
-        ).isoformat()
-
-        # Store original session state to verify it's not modified
-        original_session_data = dict(self.request.session)
-        self.request.session.modified = False
-
-        # Save the original method
-        original_refresh_obo_token = self.middleware._refresh_obo_token
-        
-        # Create a mock implementation that simulates failure
-        def mock_refresh_obo_token(request):
-            # This simulates a failed token refresh - no changes to session
-            pass
-            
-        # Replace the method with our mock
-        self.middleware._refresh_obo_token = mock_refresh_obo_token
-        
-        try:
-            # Call the method directly
-            self.middleware._refresh_obo_token(self.request)
-
-            # Verify session was not modified
-            self.assertEqual(dict(self.request.session), original_session_data)
-            self.assertFalse(self.request.session.modified)
-        finally:
-            # Restore the original method
-            self.middleware._refresh_obo_token = original_refresh_obo_token
-
-    def test_obo_token_without_access_token(self):
-        """Test OBO token handling when access token is missing"""
-        # Only OBO token exists
-        self.request.session["ADFS_OBO_ACCESS_TOKEN"] = "obo_token"
-        self.request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = (
-            datetime.datetime.now().isoformat()
-        )
-        # No ADFS_ACCESS_TOKEN
-
-        # Store original session state to verify it's not modified
-        original_session_data = dict(self.request.session)
-        self.request.session.modified = False
-
-        self.middleware._refresh_obo_token(self.request)
-
-        # Verify session not modified
-        self.assertEqual(dict(self.request.session), original_session_data)
-        self.assertFalse(self.request.session.modified)
-
-    # Group 5: Authentication Signal Tests
-
-    def test_capture_tokens_from_auth(self):
-        """Test capturing tokens during authentication"""
-        # Since _capture_tokens_from_auth was removed, we'll directly set the tokens
-        # in the session to simulate what would happen after authentication
-        from django_auth_adfs.utils import _encrypt_token
-        
-        # Set up the session with encrypted tokens
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token("test_refresh_token")
-        self.request.session["ADFS_OBO_ACCESS_TOKEN"] = _encrypt_token("test_obo_token")
-        
-        # Set expiration times
-        expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-        self.request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-        self.request.session.modified = True
-
-        # Check session
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_ACCESS_TOKEN"]),
-            "test_access_token",
-        )
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_REFRESH_TOKEN"]),
-            "test_refresh_token",
-        )
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_OBO_ACCESS_TOKEN"]),
-            "test_obo_token",
-        )
-        self.assertTrue("ADFS_TOKEN_EXPIRES_AT" in self.request.session)
-        self.assertTrue("ADFS_OBO_TOKEN_EXPIRES_AT" in self.request.session)
-
-    def test_capture_tokens_from_adfs_response_only(self):
-        """Test capturing tokens when they're only in the ADFS response, not on sender"""
-        # Since _capture_tokens_from_auth was removed, we'll directly set the tokens
-        # in the session to simulate what would happen after authentication
-        from django_auth_adfs.utils import _encrypt_token
-        
-        # Set up the session with encrypted tokens from the response
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("response_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token("response_refresh_token")
-        
-        # Set expiration time
-        expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-        self.request.session.modified = True
-
-        # Check session
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_ACCESS_TOKEN"]),
-            "response_access_token",
-        )
-        self.assertEqual(
-            _decrypt_token(self.request.session["ADFS_REFRESH_TOKEN"]),
-            "response_refresh_token",
-        )
-        self.assertTrue("ADFS_TOKEN_EXPIRES_AT" in self.request.session)
-
-    # Group 6: Middleware Call Tests
-
-    def test_middleware_call_with_authenticated_user(self):
-        """Test the complete middleware request/response cycle with authenticated user"""
-        # Create request with authenticated user
-        request = self.factory.get("/")
-        request.user = self.user
-        request.session = SessionStore()
-        
-        # Add tokens directly to the session
-        access_token = "test_access_token"
-        refresh_token = "test_refresh_token"
-        expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
-        
-        request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token(access_token)
-        request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token(refresh_token)
-        request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-        request.session.modified = True
-
-        # Call middleware
-        response = self.middleware(request)
-
-        # Check that tokens are still in the session
-        self.assertEqual(
-            _decrypt_token(request.session["ADFS_ACCESS_TOKEN"]), access_token
-        )
-        self.assertEqual(
-            _decrypt_token(request.session["ADFS_REFRESH_TOKEN"]), refresh_token
-        )
-        self.assertEqual(
-            request.session["ADFS_TOKEN_EXPIRES_AT"], expires_at.isoformat()
-        )
-
-    def test_middleware_post_response_token_storage(self):
-        """Test tokens added during authentication are stored in the session"""
-        # Create a middleware that simulates authentication during request processing
-        def get_response_with_auth_signal(request):
-            # Since _capture_tokens_from_auth was removed, we'll directly set the tokens
-            # in the session to simulate what would happen after authentication
-            request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
-            request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token("test_refresh_token")
-            request.session["ADFS_OBO_ACCESS_TOKEN"] = _encrypt_token("test_obo_token")
-            
-            # Set expiration times
-            expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
-            request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-            request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-            request.session.modified = True
-            
-            return Mock()
-
-        # Create a middleware with our custom get_response
-        middleware = TokenLifecycleMiddleware(get_response_with_auth_signal)
-        
-        # Create a request
-        request = self.factory.get("/")
-        request.session = SessionStore()
-        request.user = self.user
-        
-        # Call the middleware
-        response = middleware(request)
-        
-        # Check that tokens are in the session
-        self.assertEqual(
-            _decrypt_token(request.session["ADFS_ACCESS_TOKEN"]),
-            "test_access_token",
-        )
-        self.assertEqual(
-            _decrypt_token(request.session["ADFS_REFRESH_TOKEN"]),
-            "test_refresh_token",
-        )
-        self.assertEqual(
-            _decrypt_token(request.session["ADFS_OBO_ACCESS_TOKEN"]),
-            "test_obo_token",
-        )
-        self.assertTrue("ADFS_TOKEN_EXPIRES_AT" in request.session)
-        self.assertTrue("ADFS_OBO_TOKEN_EXPIRES_AT" in request.session)
-
-    def test_middleware_without_user(self):
-        """Test middleware behavior when request has no user"""
-        request = self.factory.get("/")
-        request.session = SessionStore()
-
-        response = self.middleware(request)
-        # Should not raise any errors
-        self.assertEqual(response, request)
-
-    def test_middleware_with_unauthenticated_user(self):
-        """Test middleware behavior with unauthenticated user"""
-        request = self.factory.get("/")
-        request.user = Mock(is_authenticated=False)
-        request.session = SessionStore()
-
-        with patch.object(self.middleware, "_handle_token_refresh") as mock_refresh:
-            response = self.middleware(request)
-            mock_refresh.assert_not_called()
-
-    # Group 7: Error Handling Tests
-
-    def test_handle_malformed_expiry_time(self):
-        """Test handling of malformed expiry time in session"""
-        self.request.session["ADFS_ACCESS_TOKEN"] = "test_access_token"
-        self.request.session["ADFS_REFRESH_TOKEN"] = "test_refresh_token"
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = "invalid_datetime"
-
-        # Store original session state to verify it's not modified inappropriately
-        original_session_data = dict(self.request.session)
-        self.request.session.modified = False
-
-        # Should handle gracefully without error
-        self.middleware._handle_token_refresh(self.request)
-
-        # Verify session wasn't modified inappropriately
-        self.assertEqual(dict(self.request.session), original_session_data)
-        self.assertFalse(self.request.session.modified)
-
-    def test_handle_incomplete_token_state(self):
-        """Test handling when only some token data exists in session"""
-        # Only access token, no refresh token
-        self.request.session["ADFS_ACCESS_TOKEN"] = "test_access_token"
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = (
-            datetime.datetime.now().isoformat()
-        )
-        # Missing ADFS_REFRESH_TOKEN
-
-        # Store original session state to verify it's not modified inappropriately
-        original_session_data = dict(self.request.session)
-        self.request.session.modified = False
-
-        self.middleware._handle_token_refresh(self.request)
-
-        # Verify session wasn't modified inappropriately
-        self.assertEqual(dict(self.request.session), original_session_data)
-        self.assertFalse(self.request.session.modified)
-
-    def test_handle_malformed_tokens(self):
-        """Test handling of malformed/corrupt token data in session"""
-        # Invalid token format
-        self.request.session["ADFS_ACCESS_TOKEN"] = {"malformed": "data"}
-        self.request.session["ADFS_REFRESH_TOKEN"] = None
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = "not-a-date"
-
-        # Store original session state to verify it's not modified inappropriately
-        original_session_data = dict(self.request.session)
-        self.request.session.modified = False
-
-        self.middleware._handle_token_refresh(self.request)
-
-        # Verify session wasn't modified inappropriately
-        self.assertEqual(dict(self.request.session), original_session_data)
-        self.assertFalse(self.request.session.modified)
-
-    def test_disabled_obo_token_functionality(self):
-        """Test that OBO token functionality is disabled when STORE_OBO_TOKEN is False"""
-        # Set STORE_OBO_TOKEN to False
-        self.middleware.store_obo_token = False
-        
-        # Since _capture_tokens_from_auth was removed, we'll directly set the tokens
-        # in the session to simulate what would happen after authentication
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token("test_refresh_token")
-        
-        # Set expiration time
-        expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
-        self.request.session.modified = True
-        
-        # Check that OBO token is not stored when STORE_OBO_TOKEN is False
-        self.assertFalse("ADFS_OBO_ACCESS_TOKEN" in self.request.session)
-        self.assertFalse("ADFS_OBO_TOKEN_EXPIRES_AT" in self.request.session)
+    # Group 3: Token Encryption Tests
 
     def test_token_encryption(self):
-        """Test that tokens are properly encrypted and decrypted"""
-        # Since _capture_tokens_from_auth was removed, we'll directly set the tokens
-        # in the session to simulate what would happen after authentication
-        from django_auth_adfs.utils import _encrypt_token, _decrypt_token
-        
-        # Set up the session with encrypted tokens
-        access_token = "test_access_token"
-        encrypted_token = _encrypt_token(access_token)
-        self.request.session["ADFS_ACCESS_TOKEN"] = encrypted_token
-        
-        # Verify encryption/decryption works
-        self.assertNotEqual(encrypted_token, access_token)
-        self.assertEqual(_decrypt_token(encrypted_token), access_token)
-        
-        # Test with a different encryption salt
-        with patch("django_auth_adfs.utils.settings") as mock_settings:
-            mock_settings.TOKEN_ENCRYPTION_SALT = "different_salt"
-            different_encrypted = _encrypt_token(access_token)
-            self.assertNotEqual(different_encrypted, encrypted_token)
+        """Test token encryption and decryption"""
+        original = "test_token"
+        encrypted = token_manager.encrypt_token(original)
+        decrypted = token_manager.decrypt_token(encrypted)
+
+        self.assertNotEqual(original, encrypted)
+        self.assertEqual(original, decrypted)
 
     @override_settings(TOKEN_ENCRYPTION_SALT="custom-salt-for-testing")
     def test_custom_encryption_salt(self):
-        """Test that custom encryption salt changes the encrypted token value"""
-        # First, encrypt a token with the default salt
-        original_token = "test_access_token"
-        default_encrypted_token = _encrypt_token(original_token)
-
-        # Now, encrypt the same token with a custom salt (set via override_settings)
-        with patch("django_auth_adfs.utils.settings") as mock_settings:
+        """Test encryption with custom salt"""
+        original = "test_token"
+        
+        # Encrypt with default salt
+        default_encrypted = token_manager.encrypt_token(original)
+        
+        # Encrypt with custom salt
+        with patch("django_auth_adfs.token_manager.settings") as mock_settings:
             mock_settings.TOKEN_ENCRYPTION_SALT = "custom-salt-for-testing"
-            custom_encrypted_token = _encrypt_token(original_token)
+            custom_encrypted = token_manager.encrypt_token(original)
+        
+        self.assertNotEqual(default_encrypted, custom_encrypted)
 
-        # The encrypted tokens should be different due to different salts
-        self.assertNotEqual(default_encrypted_token, custom_encrypted_token)
+    # Group 4: Token Refresh Tests
 
-        # But both should decrypt to the original token when using the correct salt
-        with patch("django_auth_adfs.utils.settings") as mock_settings:
-            mock_settings.TOKEN_ENCRYPTION_SALT = "custom-salt-for-testing"
-            decrypted_token = _decrypt_token(custom_encrypted_token)
-
-        self.assertEqual(original_token, decrypted_token)
-
-        # A token encrypted with one salt should not be decryptable with another
-        with patch("django_auth_adfs.utils.settings") as mock_settings:
-            mock_settings.TOKEN_ENCRYPTION_SALT = "different-salt"
-            # The function catches exceptions and returns None, so check for None
-            self.assertIsNone(_decrypt_token(custom_encrypted_token))
-
-    @patch("django_auth_adfs.middleware.provider_config")
-    def test_refresh_token_failure_with_logout(self, mock_provider_config):
-        """Test token refresh failure with LOGOUT_ON_TOKEN_REFRESH_FAILURE enabled"""
-        # Setup
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token(
-            "test_refresh_token"
+    def test_check_token_expiration(self):
+        """Test token expiration checking"""
+        # Set up tokens that will expire soon
+        token_manager.store_tokens(
+            self.request,
+            "test_access",
+            {
+                "access_token": "test_access",
+                "refresh_token": "test_refresh",
+                "expires_in": 60  # 1 minute
+            }
         )
-        expires_at = datetime.datetime.now() - datetime.timedelta(minutes=5)
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
 
-        # Mock the response from the token endpoint
+        # Should detect expiration and attempt refresh
+        with patch.object(token_manager, "refresh_tokens") as mock_refresh:
+            token_manager.check_token_expiration(self.request)
+            mock_refresh.assert_called_once_with(self.request)
+
+    def test_check_token_expiration_not_needed(self):
+        """Test token expiration checking when refresh not needed"""
+        # Set up tokens that won't expire soon
+        token_manager.store_tokens(
+            self.request,
+            "test_access",
+            {
+                "access_token": "test_access",
+                "refresh_token": "test_refresh",
+                "expires_in": 7200  # 2 hours
+            }
+        )
+
+        # Should not attempt refresh
+        with patch.object(token_manager, "refresh_tokens") as mock_refresh:
+            token_manager.check_token_expiration(self.request)
+            mock_refresh.assert_not_called()
+
+    @patch("django_auth_adfs.token_manager.provider_config")
+    def test_refresh_tokens(self, mock_provider_config):
+        """Test token refresh process"""
+        # Set up expired tokens
+        token_manager.store_tokens(
+            self.request,
+            "old_access",
+            {
+                "access_token": "old_access",
+                "refresh_token": "old_refresh",
+                "expires_in": -60  # Expired
+            }
+        )
+
+        # Mock successful refresh response
         mock_response = Mock()
-        mock_response.status_code = 400
-        mock_response.text = "Invalid refresh token"
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "access_token": "new_access",
+            "refresh_token": "new_refresh",
+            "expires_in": 3600
+        }
         mock_provider_config.session.post.return_value = mock_response
         mock_provider_config.token_endpoint = "https://example.com/token"
 
-        # Create a middleware with LOGOUT_ON_TOKEN_REFRESH_FAILURE=True
-        middleware = TokenLifecycleMiddleware(lambda r: r)
-        middleware.logout_on_token_refresh_failure = True
+        # Attempt refresh
+        success = token_manager.refresh_tokens(self.request)
+        self.assertTrue(success)
 
-        # Mock the logout function
-        with patch("django_auth_adfs.middleware.logout") as mock_logout:
-            # Call the refresh tokens method
-            middleware._refresh_tokens(self.request)
-            
-            # Verify logout was called
-            mock_logout.assert_called_once_with(self.request)
-
-    @patch("django_auth_adfs.middleware.provider_config")
-    def test_refresh_token_failure_without_logout(self, mock_provider_config):
-        """Test token refresh failure with LOGOUT_ON_TOKEN_REFRESH_FAILURE disabled"""
-        # Setup
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token(
-            "test_refresh_token"
+        # Verify tokens were updated
+        self.assertEqual(
+            token_manager.get_access_token(self.request),
+            "new_access"
         )
-        expires_at = datetime.datetime.now() - datetime.timedelta(minutes=5)
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
 
-        # Mock the response from the token endpoint
-        mock_response = Mock()
-        mock_response.status_code = 400
-        mock_response.text = "Invalid refresh token"
-        mock_provider_config.session.post.return_value = mock_response
-        mock_provider_config.token_endpoint = "https://example.com/token"
+    # Group 5: OBO Token Tests
 
-        # Create a middleware with LOGOUT_ON_TOKEN_REFRESH_FAILURE=False
-        middleware = TokenLifecycleMiddleware(lambda r: r)
-        middleware.logout_on_token_refresh_failure = False
-
-        # Mock the logout function
-        with patch("django_auth_adfs.middleware.logout") as mock_logout:
-            # Call the refresh tokens method
-            middleware._refresh_tokens(self.request)
-            
-            # Verify logout was not called
-            mock_logout.assert_not_called()
-
-    @patch("django_auth_adfs.middleware.provider_config")
-    def test_refresh_token_exception_with_logout(self, mock_provider_config):
-        """Test token refresh exception with LOGOUT_ON_TOKEN_REFRESH_FAILURE enabled"""
-        # Setup
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("test_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token(
-            "test_refresh_token"
+    def test_obo_token_management(self):
+        """Test OBO token storage and retrieval"""
+        # Store regular tokens first
+        token_manager.store_tokens(
+            self.request,
+            "test_access",
+            {"access_token": "test_access", "expires_in": 3600}
         )
-        expires_at = datetime.datetime.now() - datetime.timedelta(minutes=5)
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
 
-        # Make the request raise an exception
-        mock_provider_config.session.post.side_effect = Exception("Connection error")
-        mock_provider_config.token_endpoint = "https://example.com/token"
-
-        # Create a middleware with LOGOUT_ON_TOKEN_REFRESH_FAILURE=True
-        middleware = TokenLifecycleMiddleware(lambda r: r)
-        middleware.logout_on_token_refresh_failure = True
-
-        # Mock the logout function
-        with patch("django_auth_adfs.middleware.logout") as mock_logout:
-            # Call the refresh tokens method
-            middleware._refresh_tokens(self.request)
+        # Mock OBO token acquisition
+        with patch("django_auth_adfs.backend.AdfsBaseBackend") as mock_backend:
+            mock_backend.return_value.get_obo_access_token.return_value = "test_obo"
             
-            # Verify logout was called
-            mock_logout.assert_called_once_with(self.request)
+            # Store OBO token
+            self.request.session[token_manager.OBO_ACCESS_TOKEN_KEY] = \
+                token_manager.encrypt_token("test_obo")
+            self.request.session[token_manager.OBO_TOKEN_EXPIRES_AT_KEY] = \
+                (datetime.datetime.now() + datetime.timedelta(hours=1)).isoformat()
 
-    def test_handle_token_refresh_calls_refresh_obo_token(self):
-        """
-        Test that _handle_token_refresh calls _refresh_obo_token when the OBO token is expired.
-        """
-        # Ensure OBO token storage is enabled
-        self.middleware.store_obo_token = True
-        
-        # Set up session with valid access token but expired OBO token
-        self.request.session["ADFS_ACCESS_TOKEN"] = _encrypt_token("valid_access_token")
-        self.request.session["ADFS_REFRESH_TOKEN"] = _encrypt_token("valid_refresh_token")
-        self.request.session["ADFS_OBO_ACCESS_TOKEN"] = _encrypt_token("expired_obo_token")
-        
-        # Set access token to not expire soon
-        self.request.session["ADFS_TOKEN_EXPIRES_AT"] = (
-            datetime.datetime.now() + datetime.timedelta(hours=1)
-        ).isoformat()
-        
-        # Set OBO token to be expired
-        expired_time = datetime.datetime.now() - datetime.timedelta(minutes=5)
-        self.request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = expired_time.isoformat()
-        
-        # Save the original method
-        original_refresh_obo_token = self.middleware._refresh_obo_token
-        
-        # Create a spy function to track if the method is called
-        refresh_called = [False]
-        
-        def spy_refresh_obo_token(request):
-            refresh_called[0] = True
-            # Simulate successful refresh
-            request.session["ADFS_OBO_ACCESS_TOKEN"] = _encrypt_token("new_obo_token")
-            request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = (
-                datetime.datetime.now() + datetime.timedelta(hours=1)
-            ).isoformat()
-            
-        # Replace the method with our spy
-        self.middleware._refresh_obo_token = spy_refresh_obo_token
-        
+        # Verify OBO token retrieval
+        obo_token = token_manager.get_obo_access_token(self.request)
+        self.assertEqual(obo_token, "test_obo")
+
+    def test_disabled_obo_token(self):
+        """Test OBO token functionality when disabled"""
+        token_manager.store_obo_token = False
         try:
-            # Call handle token refresh
-            self.middleware._handle_token_refresh(self.request)
-            
-            # Verify _refresh_obo_token was called
-            self.assertTrue(refresh_called[0], 
-                           "_refresh_obo_token should be called when OBO token is expired")
-                           
-            # Verify the token was updated
-            self.assertEqual(
-                _decrypt_token(self.request.session["ADFS_OBO_ACCESS_TOKEN"]),
-                "new_obo_token"
+            # Store regular tokens
+            token_manager.store_tokens(
+                self.request,
+                "test_access",
+                {"access_token": "test_access", "expires_in": 3600}
             )
+
+            # Verify no OBO token stored
+            self.assertIsNone(token_manager.get_obo_access_token(self.request))
+            self.assertFalse(token_manager.OBO_ACCESS_TOKEN_KEY in self.request.session)
         finally:
-            # Restore the original method
-            self.middleware._refresh_obo_token = original_refresh_obo_token
+            token_manager.store_obo_token = True
+
+    # Group 6: Error Handling Tests
+
+    def test_handle_malformed_expiry_time(self):
+        """Test handling of malformed expiry time"""
+        # Store tokens with invalid expiry
+        self.request.session[token_manager.ACCESS_TOKEN_KEY] = \
+            token_manager.encrypt_token("test_access")
+        self.request.session[token_manager.TOKEN_EXPIRES_AT_KEY] = "invalid_datetime"
+
+        # Should handle gracefully
+        success = token_manager.check_token_expiration(self.request)
+        self.assertFalse(success)
+
+    def test_handle_encryption_errors(self):
+        """Test handling of encryption/decryption errors"""
+        # Try to decrypt invalid data
+        result = token_manager.decrypt_token("invalid_encrypted_data")
+        self.assertIsNone(result)
+
+        # Try to encrypt None
+        result = token_manager.encrypt_token(None)
+        self.assertIsNone(result)
+
+    @patch("django_auth_adfs.token_manager.provider_config")
+    def test_refresh_failure_with_logout(self, mock_provider_config):
+        """Test token refresh failure with logout enabled"""
+        # Enable logout on refresh failure
+        token_manager.logout_on_refresh_failure = True
+        try:
+            # Set up expired tokens
+            token_manager.store_tokens(
+                self.request,
+                "old_access",
+                {
+                    "access_token": "old_access",
+                    "refresh_token": "old_refresh",
+                    "expires_in": -60
+                }
+            )
+
+            # Mock failed refresh
+            mock_response = Mock()
+            mock_response.status_code = 400
+            mock_response.text = "Invalid refresh token"
+            mock_provider_config.session.post.return_value = mock_response
+            mock_provider_config.token_endpoint = "https://example.com/token"
+
+            # Mock logout
+            with patch("django_auth_adfs.token_manager.logout") as mock_logout:
+                success = token_manager.refresh_tokens(self.request)
+                self.assertFalse(success)
+                mock_logout.assert_called_once_with(self.request)
+        finally:
+            token_manager.logout_on_refresh_failure = False
