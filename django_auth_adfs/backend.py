@@ -1,4 +1,5 @@
 import logging
+import datetime
 
 import jwt
 from django.contrib.auth import get_user_model
@@ -181,7 +182,87 @@ class AdfsBaseBackend(ModelBackend):
                 logger.info(str(error))
                 raise PermissionDenied
 
-    def process_access_token(self, access_token, adfs_response=None):
+    def _should_store_tokens(self, request):
+        """
+        Check if tokens should be stored in the session.
+        
+        Tokens are stored if:
+        1. We have a request with a session
+        2. The TokenLifecycleMiddleware is enabled
+        3. We're not using signed cookies
+        """
+        if not request or not hasattr(request, "session"):
+            return False
+            
+        try:
+            from django.conf import settings as django_settings
+            
+            # Check if TokenLifecycleMiddleware is enabled
+            for middleware in django_settings.MIDDLEWARE:
+                if middleware.endswith('TokenLifecycleMiddleware'):
+                    # Don't store tokens in signed cookies
+                    if django_settings.SESSION_ENGINE != "django.contrib.sessions.backends.signed_cookies":
+                        return True
+        except Exception as e:
+            logger.warning(f"Error checking if tokens should be stored: {e}")
+            
+        return False
+        
+    def _store_tokens_in_session(self, request, access_token, adfs_response=None):
+        """
+        Store tokens in the session.
+        """
+        if not self._should_store_tokens(request):
+            return
+            
+        try:
+            from django_auth_adfs.utils import _encrypt_token
+            session_modified = False
+            
+            # Store access token
+            encrypted_token = _encrypt_token(access_token)
+            if encrypted_token:
+                request.session["ADFS_ACCESS_TOKEN"] = encrypted_token
+                session_modified = True
+            
+            # Store refresh token
+            if adfs_response and "refresh_token" in adfs_response:
+                refresh_token = adfs_response["refresh_token"]
+                encrypted_token = _encrypt_token(refresh_token)
+                if encrypted_token:
+                    request.session["ADFS_REFRESH_TOKEN"] = encrypted_token
+                    session_modified = True
+            
+            # Store token expiration
+            if adfs_response and "expires_in" in adfs_response:
+                expires_at = datetime.datetime.now() + datetime.timedelta(
+                    seconds=int(adfs_response["expires_in"])
+                )
+                request.session["ADFS_TOKEN_EXPIRES_AT"] = expires_at.isoformat()
+                session_modified = True
+            
+            # Store OBO token if enabled
+            store_obo_token = getattr(settings, "STORE_OBO_TOKEN", True)
+            if store_obo_token:
+                try:
+                    obo_token = self.get_obo_access_token(access_token)
+                    if obo_token:
+                        encrypted_token = _encrypt_token(obo_token)
+                        if encrypted_token:
+                            request.session["ADFS_OBO_ACCESS_TOKEN"] = encrypted_token
+                            obo_expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
+                            request.session["ADFS_OBO_TOKEN_EXPIRES_AT"] = obo_expires_at.isoformat()
+                            session_modified = True
+                except Exception as e:
+                    logger.warning(f"Error getting OBO token: {e}")
+            
+            if session_modified:
+                request.session.modified = True
+                logger.debug("Stored tokens in session during authentication")
+        except Exception as e:
+            logger.warning(f"Error storing tokens in session: {e}")
+
+    def process_access_token(self, access_token, adfs_response=None, request=None):
         if not access_token:
             raise PermissionDenied
 
@@ -196,6 +277,10 @@ class AdfsBaseBackend(ModelBackend):
             raise PermissionDenied
         if not claims:
             raise PermissionDenied
+
+        # Store tokens in session if middleware is enabled
+        if request and adfs_response:
+            self._store_tokens_in_session(request, access_token, adfs_response)
 
         groups = self.process_user_groups(claims, access_token)
         user = self.create_user(claims)
@@ -409,7 +494,7 @@ class AdfsAuthCodeBackend(AdfsBaseBackend):
     Microsoft ADFS server with an authorization code.
     """
 
-    def authenticate(self, request=None, authorization_code=None, **kwargs):
+    def authenticate(self, request=None, username=None, password=None, authorization_code=None, **kwargs):
         # If there's no token or code, we pass control to the next authentication backend
         if authorization_code is None or authorization_code == '':
             logger.debug("Authentication backend was called but no authorization code was received")
@@ -420,7 +505,7 @@ class AdfsAuthCodeBackend(AdfsBaseBackend):
 
         adfs_response = self.exchange_auth_code(authorization_code, request)
         access_token = adfs_response["access_token"]
-        user = self.process_access_token(access_token, adfs_response)
+        user = self.process_access_token(access_token, adfs_response, request)
         return user
 
 
@@ -430,7 +515,7 @@ class AdfsAccessTokenBackend(AdfsBaseBackend):
     Microsoft ADFS server with an access token retrieved by the client.
     """
 
-    def authenticate(self, request=None, access_token=None, **kwargs):
+    def authenticate(self, request=None, username=None, password=None, access_token=None, **kwargs):
         # If loaded data is too old, reload it again
         provider_config.load_config()
 
@@ -440,7 +525,7 @@ class AdfsAccessTokenBackend(AdfsBaseBackend):
             return
 
         access_token = access_token.decode()
-        user = self.process_access_token(access_token)
+        user = self.process_access_token(access_token, request=request)
         return user
 
 
