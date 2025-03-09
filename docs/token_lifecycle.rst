@@ -204,28 +204,28 @@ See `the token types section <#understanding-access-tokens-vs-obo-tokens>`_ for 
 Accessing Tokens in Your Views
 ------------------------------
 
-When building views that need to make requests using the Azure AD/ADFS tokens, you'll need to access the tokens stored in the session.
-
-Since tokens are encrypted in the session, Token Lifecycle Middleware provides utility functions in the ``django_auth_adfs.utils`` module to help you access tokens safely:
+Since tokens are encrypted in the session, Token Lifecycle Middleware provides a centralized TokenManager to help you access tokens safely:
 
 .. code-block:: python
 
+    from django_auth_adfs.token_manager import token_manager
+
     # For your own APIs or APIs that trust your application directly
-    from django_auth_adfs.utils import get_access_token
+    access_token = token_manager.get_access_token(request)
 
     # For Microsoft Graph API or other APIs requiring delegated access
-    from django_auth_adfs.utils import get_obo_access_token
+    obo_token = token_manager.get_obo_access_token(request)
 
-These utility functions automatically handle decryption of the tokens, so you don't need to worry about the encryption details.
+The TokenManager automatically handles encryption/decryption of tokens, so you don't need to worry about the encryption details.
 
 .. warning::
-    You should always use these utility functions to access tokens rather than accessing them directly from the session.
+    You should always use the TokenManager to access tokens rather than accessing them directly from the session.
     Direct access to ``request.session["ADFS_ACCESS_TOKEN"]`` will give you the encrypted token, not the actual token value.
 
 Examples
 ----------------------
 
-Here are practical examples of using these utility functions in your views:
+Here are practical examples of using the TokenManager in your views:
 
 Using with Microsoft Graph API
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -238,13 +238,13 @@ This is the recommended flow for delegated access to Microsoft Graph API.
 
     from django.contrib.auth.decorators import login_required
     from django.http import JsonResponse
-    from django_auth_adfs.utils import get_obo_access_token
+    from django_auth_adfs.token_manager import token_manager
     import requests
 
     @login_required
     def me_view(request):
         """Get the user's profile from Microsoft Graph API"""
-        obo_token = get_obo_access_token(request)
+        obo_token = token_manager.get_obo_access_token(request)
 
         if not obo_token:
             return JsonResponse({"error": "No OBO token available"}, status=401)
@@ -267,21 +267,21 @@ This is the recommended flow for delegated access to Microsoft Graph API.
 Using with other resources
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The key difference here is to use the ``get_access_token`` function to get the token for the resource you are accessing.
+The key difference here is to use the ``get_access_token`` method to get the token for the resource you are accessing.
 
-This is different than the ``get_obo_access_token`` function, which is used for Microsoft Graph API delegated access in the previous example.
+This is different than the ``get_obo_access_token`` method, which is used for Microsoft Graph API delegated access in the previous example.
 
 .. code-block:: python
 
     from rest_framework.views import APIView
     from rest_framework.response import Response
-    from django_auth_adfs.utils import get_access_token
+    from django_auth_adfs.token_manager import token_manager
     import requests
 
     class ExternalApiView(APIView):
         def get(self, request):
             """Call an API that accepts your application's token"""
-            token = get_access_token(request)
+            token = token_manager.get_access_token(request)
 
             if not token:
                 return Response({"error": "No access token available"}, status=401)
@@ -300,7 +300,7 @@ The following example code demonstrates a debug view to check the values of the 
 
     from django.contrib.auth.decorators import login_required
     from django.http import JsonResponse
-    from django_auth_adfs.utils import get_access_token, get_obo_access_token
+    from django_auth_adfs.token_manager import token_manager
     from datetime import datetime
 
     @login_required
@@ -314,18 +314,16 @@ The following example code demonstrates a debug view to check the values of the 
 
         # Basic session token info
         session_info = {
-            "has_access_token": "ADFS_ACCESS_TOKEN" in request.session,
-            "has_refresh_token": "ADFS_REFRESH_TOKEN" in request.session,
-            "has_expires_at": "ADFS_TOKEN_EXPIRES_AT" in request.session,
+            "has_access_token": token_manager.ACCESS_TOKEN_KEY in request.session,
+            "has_refresh_token": token_manager.REFRESH_TOKEN_KEY in request.session,
+            "has_expires_at": token_manager.TOKEN_EXPIRES_AT_KEY in request.session,
         }
 
         # Add token expiration details if available
-        if "ADFS_TOKEN_EXPIRES_AT" in request.session:
-            from datetime import datetime
-
+        if token_manager.TOKEN_EXPIRES_AT_KEY in request.session:
             try:
                 expires_at = datetime.fromisoformat(
-                    request.session["ADFS_TOKEN_EXPIRES_AT"]
+                    request.session[token_manager.TOKEN_EXPIRES_AT_KEY]
                 )
                 now = datetime.now()
                 session_info["token_expires_at"] = expires_at.isoformat()
@@ -337,15 +335,14 @@ The following example code demonstrates a debug view to check the values of the 
                 session_info["expiration_parse_error"] = str(e)
 
         # Show raw encrypted tokens for debugging
-        if "ADFS_ACCESS_TOKEN" in request.session:
-            raw_token = request.session["ADFS_ACCESS_TOKEN"]
+        if token_manager.ACCESS_TOKEN_KEY in request.session:
+            raw_token = request.session[token_manager.ACCESS_TOKEN_KEY]
             session_info["raw_token_preview"] = f"{raw_token[:10]}...{raw_token[-10:]}"
             session_info["raw_token_length"] = len(raw_token)
 
             # Try to decode as JWT without decryption (should fail if properly encrypted)
             try:
                 import jwt
-
                 jwt.decode(raw_token, options={"verify_signature": False})
                 session_info["is_encrypted"] = False
             except:
@@ -353,9 +350,7 @@ The following example code demonstrates a debug view to check the values of the 
 
         # Get properly decrypted access token
         try:
-            from django_auth_adfs.utils import get_access_token
-
-            access_token = get_access_token(request)
+            access_token = token_manager.get_access_token(request)
             session_info["decrypted_access_token_available"] = access_token is not None
 
             if access_token:
@@ -368,13 +363,10 @@ The following example code demonstrates a debug view to check the values of the 
                 # Try to decode as JWT (should succeed if properly decrypted)
                 try:
                     import jwt
-
                     decoded = jwt.decode(access_token, options={"verify_signature": False})
                     session_info["jwt_decode_success"] = True
                     # Add some basic JWT info without exposing sensitive data
                     if "exp" in decoded:
-                        from datetime import datetime
-
                         exp_time = datetime.fromtimestamp(decoded["exp"])
                         session_info["jwt_expiry"] = exp_time.isoformat()
                 except Exception as e:
@@ -384,16 +376,14 @@ The following example code demonstrates a debug view to check the values of the 
 
         # Check if OBO token is available
         try:
-            from django_auth_adfs.utils import get_obo_access_token
-
-            obo_token = get_obo_access_token(request)
+            obo_token = token_manager.get_obo_access_token(request)
             obo_info = {
                 "has_obo_token": obo_token is not None,
             }
 
             # Show raw encrypted OBO token if available
-            if "ADFS_OBO_ACCESS_TOKEN" in request.session:
-                raw_obo = request.session["ADFS_OBO_ACCESS_TOKEN"]
+            if token_manager.OBO_ACCESS_TOKEN_KEY in request.session:
+                raw_obo = request.session[token_manager.OBO_ACCESS_TOKEN_KEY]
                 obo_info["raw_obo_preview"] = f"{raw_obo[:10]}...{raw_obo[-10:]}"
                 obo_info["raw_obo_length"] = len(raw_obo)
 
@@ -405,13 +395,10 @@ The following example code demonstrates a debug view to check the values of the 
                 # Try to decode as JWT (should succeed if properly decrypted)
                 try:
                     import jwt
-
                     decoded = jwt.decode(obo_token, options={"verify_signature": False})
                     obo_info["jwt_decode_success"] = True
                     # Add some basic JWT info without exposing sensitive data
                     if "exp" in decoded:
-                        from datetime import datetime
-
                         exp_time = datetime.fromtimestamp(decoded["exp"])
                         obo_info["jwt_expiry"] = exp_time.isoformat()
                 except Exception as e:
