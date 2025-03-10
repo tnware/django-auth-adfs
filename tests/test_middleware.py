@@ -237,9 +237,6 @@ class TokenLifecycleTests(TestCase):
 
     def test_signed_cookies_handling(self):
         """Test behavior with signed cookies session backend"""
-        test_token = create_test_token({"type": "access"})
-        refresh_token = create_test_token({"type": "refresh"})
-
         token_manager.using_signed_cookies = True
         try:
             self.middleware(self.request)
@@ -260,27 +257,14 @@ class TokenLifecycleTests(TestCase):
             self.middleware(self.request)
             mock_check.assert_called_once_with(self.request)
 
-    def test_token_storage_setting(self):
-        """Test token storage setting detection"""
-        # Test with token storage enabled
-        original_value = token_manager.enable_token_storage
-
-        try:
-            token_manager.enable_token_storage = True
-            self.assertTrue(token_manager.should_store_tokens(self.request))
-
-            token_manager.enable_token_storage = False
-            self.assertFalse(token_manager.should_store_tokens(self.request))
-        finally:
-            token_manager.enable_token_storage = original_value
-
     def test_clear_tokens(self):
         """Test clearing tokens from session"""
         access_token = create_test_token({"type": "access"})
         refresh_token = create_test_token({"type": "refresh"})
 
-        # Store some tokens first
-        token_manager.store_tokens(
+        # Add token storage capability and store tokens
+        self.middleware(self.request)
+        self.request.token_storage.store_tokens(
             self.request,
             access_token,
             {
@@ -310,8 +294,9 @@ class TokenLifecycleTests(TestCase):
         access_token = create_test_token({"type": "access"})
         new_obo_token = create_test_token({"type": "obo"})
 
-        # Store access token first
-        token_manager.store_tokens(
+        # Add token storage capability and store access token
+        self.middleware(self.request)
+        self.request.token_storage.store_tokens(
             self.request,
             access_token,
             {"access_token": access_token, "expires_in": 3600},
@@ -337,32 +322,3 @@ class TokenLifecycleTests(TestCase):
             self.assertTrue(
                 token_manager.OBO_TOKEN_EXPIRES_AT_KEY in self.request.session
             )
-
-    def test_should_store_tokens_edge_cases(self):
-        """Test edge cases for token storage decisions"""
-        # Test with no request
-        self.assertFalse(token_manager.should_store_tokens(None))
-
-        # Test with request but no session
-        request_without_session = self.factory.get("/")
-        # Instead of deleting session attribute that doesn't exist,
-        # we'll create a Mock object with no session attribute
-        from unittest.mock import Mock
-
-        request_without_session = Mock(spec=[])  # Empty spec means no attributes
-        self.assertFalse(token_manager.should_store_tokens(request_without_session))
-
-        # Test with signed cookies
-        token_manager.using_signed_cookies = True
-        try:
-            self.assertFalse(token_manager.should_store_tokens(self.request))
-        finally:
-            token_manager.using_signed_cookies = False
-
-        # Test with token storage disabled
-        original_value = token_manager.enable_token_storage
-        token_manager.enable_token_storage = False
-        try:
-            self.assertFalse(token_manager.should_store_tokens(self.request))
-        finally:
-            token_manager.enable_token_storage = original_value
