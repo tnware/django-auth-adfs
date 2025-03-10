@@ -206,33 +206,6 @@ class TokenManager:
         encrypted_token = request.session.get(self.OBO_ACCESS_TOKEN_KEY)
         return self.decrypt_token(encrypted_token)
 
-    def validate_token_format(self, token):
-        """
-        Basic validation of token format before storage.
-
-        Args:
-            token (str): Token to validate
-
-        Returns:
-            bool: True if token appears valid, False otherwise
-        """
-        if not isinstance(token, str):
-            return False
-
-        try:
-            # Check if it's a valid JWT format
-            parts = token.split('.')
-            if len(parts) != 3:
-                return False
-
-            # Check if each part is valid base64
-            for part in parts:
-                base64.urlsafe_b64decode(part + '=' * (-len(part) % 4))
-
-            return True
-        except Exception:
-            return False
-
     def store_tokens(self, request, access_token, adfs_response=None):
         """
         Store tokens in the session.
@@ -247,10 +220,6 @@ class TokenManager:
         """
         if not self.should_store_tokens(request):
             logger.debug("Token storage is disabled")
-            return False
-
-        if not self.validate_token_format(access_token):
-            logger.warning("Invalid access token format, refusing to store")
             return False
 
         try:
@@ -296,7 +265,7 @@ class TokenManager:
 
                     backend = AdfsBaseBackend()
                     obo_token = backend.get_obo_access_token(access_token)
-                    if obo_token and self.validate_token_format(obo_token):
+                    if obo_token:
                         encrypted_token = self.encrypt_token(obo_token)
                         if encrypted_token:
                             request.session[self.OBO_ACCESS_TOKEN_KEY] = encrypted_token
