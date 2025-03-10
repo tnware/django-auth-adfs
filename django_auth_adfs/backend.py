@@ -199,8 +199,9 @@ class AdfsBaseBackend(ModelBackend):
             raise PermissionDenied
 
         # Store tokens in session if middleware is enabled
-        if request and adfs_response:
-            token_manager.store_tokens(request, access_token, adfs_response)
+        if request and adfs_response and hasattr(request, "token_storage"):
+            request.token_storage.store_tokens(request, access_token, adfs_response)
+
 
         groups = self.process_user_groups(claims, access_token)
         user = self.create_user(claims)
